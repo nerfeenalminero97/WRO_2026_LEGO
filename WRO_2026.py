@@ -47,6 +47,7 @@ def pila(robot):
         robot.hub.light.on(Color.RED)  
     porcentaje = int((voltaje - 7000) / 13)
     print(f'{porcentaje}% de pila')
+    print(f'Voltaje = {voltaje}')
 
 def notas():
     #Motor_MF = Motor mediano puerto F
@@ -259,6 +260,11 @@ def SA_color_negro(repeticiones, angulo, velocidad, sensores, robot):
     stop(robot)
     robot.var = 0
 
+def configurar():
+    calibrar(robot)
+    pila(robot)
+    wait(10000)
+
 def recoger_bloques(robot):
     robot.motor_gd.run_angle(200, -70)
     robot.motor_gd.run_angle(200, 70)
@@ -281,7 +287,11 @@ def construccion_pala1_bloque0cemento(robot):
     giroscopio(0, -100, 0, 1, robot)
     SA_posicion_relativa(0, 400, 200, 1, robot)
     giroscopio(-175, 100, -100, 2, robot)
-    SA_posicion_relativa(0, 500, 200, 1, robot)
+    SA_posicion_relativa(0, 700, 200, 1, robot)
+    giroscopio(150, 100, -100, 2, robot)
+    SA_posicion_relativa(150, 640, 200, 1)
+    wait(100)
     #mejorar y checar SA
+
 
 construccion_pala1_bloque0cemento(robot)
