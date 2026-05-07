@@ -29,8 +29,9 @@ class Robot:
 
 robot = Robot()
 
-while not robot.hub.imu.ready():
-    wait(10)
+# Wait for IMU to be ready (optional, remove if causing issues)
+# while not robot.hub.imu.ready():
+#     wait(10)
 
 def pila(robot):
     voltaje = robot.hub.battery.voltage()
@@ -49,7 +50,9 @@ def pila(robot):
     print(f'{porcentaje}% de pila')
     print(f'Voltaje = {voltaje}')
 
-def notas():
+
+
+"""def notas():
     #Motor_MF = Motor mediano puerto F
     #Motor_MB = Motor mediano puerto B
     #Motor_GC = Motor grande puerto C
@@ -121,13 +124,13 @@ def notas():
         
         # de esta manera avanza infinitamente con la velocidad
         while True:
-            motor_mf.run(100)
+            motor_mf.run(100) 
 
 def calibrar(robot):
     c = robot.color_sensor2.reflection()
     y = robot.color_sensor1.reflection()
     print(f'Color sensor 2 reflection: {c}')
-    print(f'Color sensor 1 reflection: {y}')
+    print(f'Color sensor 1 reflection: {y}') """
 
 def stop(robot):
     robot.motor_mb.stop()
@@ -261,7 +264,6 @@ def SA_color_negro(repeticiones, angulo, velocidad, sensores, robot):
     robot.var = 0
 
 def configurar():
-    calibrar(robot)
     pila(robot)
     wait(10000)
 
@@ -294,4 +296,5 @@ def construccion_pala1_bloque0cemento(robot):
     #mejorar y checar SA
 
 
-construccion_pala1_bloque0cemento(robot)
+if __name__ == '__main__':
+    construccion_pala1_bloque0cemento(robot)
