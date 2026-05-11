@@ -189,6 +189,22 @@ def giroscopio(angulo, velocidad, velocidad2, comparador, robot):
             if abs(robot.hub.imu.heading()) == angulo:
                 break
 
+    if comparador == 4:
+
+        rango_max = angulo + 5
+        rango_min = angulo - 5
+
+        while True:
+
+            motor_pair_run(velocidad, velocidad2, robot)
+
+            actual = robot.hub.imu.heading()
+
+            if rango_min <= actual and actual <= rango_max:
+                break
+
+            wait(10)
+
         stop(robot)
 
 def limitar(valor, minimo, maximo):
@@ -243,6 +259,23 @@ def SA_posicion_relativa(angulo, posicion_relativa, velocidad, masomenos, robot)
     stop(robot)
     wait(100)
     
+def SA_posicion_relativa_angulo_actual(posicion_relativa, velocidad, masomenos, robot):
+    angulo = robot.hub.imu.heading()
+    robot.motor_mf.reset_angle(0)
+
+    while robot.var != 1:
+        if masomenos == 1:
+            condicion = robot.motor_mf.angle() >= posicion_relativa
+        elif masomenos == 2:
+            condicion = robot.motor_mf.angle() <= posicion_relativa
+
+        SA(angulo, condicion, velocidad, robot)
+        wait(10)
+
+    robot.var = 0
+    stop(robot)
+    wait(100)
+
 def alineador(angulo, robot):
     if robot.hub.imu.heading() > angulo: 
         giroscopio(angulo, -20, 20, 3)
@@ -276,22 +309,44 @@ def recoger_bloques(robot):
     stop(robot)
 
 def construccion_pala1_bloque0cemento(robot):
-    motor_pair_distancia(220, 200, 75, robot)
+    robot.motor_mb.run_angle(300, 80)
+    robot.motor_mf.run_angle(300, 80)
+    motor_pair_distancia(300, 300, 80, robot)
     wait(500)
     robot.hub.imu.reset_heading(0)
-    SA_posicion_relativa(0, -600, -200, 2, robot)
-    SA_color_negro(1, 0, -200, 2, robot)
-    SA_posicion_relativa(0, -270, -200, 2, robot)
-    giroscopio(-45, 100, -100, 2, robot)
-    motor_pair_distancia(200, 200, 200, robot)
-    giroscopio(0, -100, 0, 1, robot)
-    SA_posicion_relativa(0, 400, 200, 1, robot)
+    SA_posicion_relativa(0, -600, -300, 2, robot)
+    SA_color_negro(1, 0, -300, 2, robot)
+    SA_posicion_relativa(0, -270, -275, 2, robot)
+    giroscopio(-35, 150, -150, 2, robot)
+    motor_pair_distancia(300, 300, 70, robot)
+    giroscopio(0, -150, 0, 1, robot)
+    SA_posicion_relativa(0, 450, 300, 1, robot)
     giroscopio(-175, 100, -100, 2, robot)
-    SA_posicion_relativa(0, 700, 200, 1, robot)
-    giroscopio(150, 100, -100, 2, robot)
-    SA_posicion_relativa(150, 640, 200, 1)
-    wait(100)
+    SA_posicion_relativa(0, 700, 300, 1, robot)
+    robot.motor_mf.run_angle(100, 100)
+    SA_posicion_relativa_angulo_actual(360, 300, 1, robot)
+    robot.motor_mf.run_angle(200, 300)
+    robot.motor_mf.run_angle(-200, 340)
+    #corroborarse que funciona igual con la grua puesta
     #mejorar y checar SA
 
+def test(robot):
+    while False:
+        motor_pair_distancia(220, 200, 75, robot)
+        wait(500)
+        robot.hub.imu.reset_heading(0)
+        SA_posicion_relativa(0, -100, -200, 2, robot)
+        giroscopio(-175, 100, -100, 2, robot)
+        wait(1000)
+        robot.motor_mf.run_angle(100, 100)
+        SA_posicion_relativa(160, 100, 200, 1, robot)
+    motor_pair_distancia(150, 350, 200, robot)
 
+def escombros_blancos(robot):
+    SA_posicion_relativa(0, 700, 900, 1, robot)
+    robot.motor_lc.run_angle(300, -295)
+
+#configurar()
+#test(robot)
 construccion_pala1_bloque0cemento(robot)
+escombros_blancos(robot)
