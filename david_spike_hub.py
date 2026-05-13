@@ -38,12 +38,12 @@ def battery_pct():
 def _safe(fn, default):
     try:
         return fn()
-    except Exception:
+    except:
         return default
 
 def telemetry():
-    dist    = _safe(drive.distance, 0)
-    heading = _safe(hub.imu.heading, 0)
+    dist    = _safe(lambda: drive.distance(), 0)
+    heading = _safe(lambda: hub.imu.heading(), 0)
     rad     = math.radians(heading)
     return {
         "x":       round(dist * math.sin(rad), 1),
@@ -53,8 +53,8 @@ def telemetry():
         "battery": _safe(lambda: max(0, min(100, int((hub.battery.voltage() - 7000) / 13))), -1),
         "color1":  _safe(lambda: COLOR_MAP.get(color1.color(), "UNKNOWN"), "ERR"),
         "color2":  _safe(lambda: COLOR_MAP.get(color2.color(), "UNKNOWN"), "ERR"),
-        "ref1":    _safe(color1.reflection, -1),
-        "ref2":    _safe(color2.reflection, -1),
+        "ref1":    _safe(lambda: color1.reflection(), -1),
+        "ref2":    _safe(lambda: color2.reflection(), -1),
     }
 
 def send(data):
@@ -100,5 +100,8 @@ while True:
         else:
             buf += ch
 
-    send(telemetry())
+    try:
+        send(telemetry())
+    except:
+        pass
     wait(50)
