@@ -91,7 +91,7 @@ class BLEWorker(QThread):
                         line = self._cmd_queue.popleft()
                         await client.write_gatt_char(
                             PYBRICKS_TX_UUID,
-                            bytes([0x01]) + line.encode(),
+                            bytes([0x06]) + line.encode(),
                             response=False
                         )
                     await asyncio.sleep(0.1)
