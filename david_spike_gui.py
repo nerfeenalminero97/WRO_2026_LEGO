@@ -85,13 +85,17 @@ class BLEWorker(QThread):
                 await client.start_notify(PYBRICKS_RX_UUID, on_notify)
                 self.log_message.emit("✅ Conectado. Iniciando programa en el hub...")
 
-                # START_USER_PROGRAM (0x01) — esto conecta stdin/stdout a BLE.
-                # Si se arranca desde el botón del hub, stdin queda desconectado.
+                # 0x00 = STOP cualquier programa corriendo, 0x01 = START
+                # Esto conecta stdin Y stdout a BLE (botón del hub solo conecta stdout)
+                await client.write_gatt_char(
+                    PYBRICKS_TX_UUID, bytes([0x00]), response=False
+                )
+                await asyncio.sleep(0.5)
                 await client.write_gatt_char(
                     PYBRICKS_TX_UUID, bytes([0x01]), response=False
                 )
-                await asyncio.sleep(1.0)   # dar tiempo al hub para arrancar
-                self.log_message.emit("▶ Programa iniciado por BLE")
+                await asyncio.sleep(1.5)
+                self.log_message.emit("▶ Programa iniciado por BLE — espera luz verde en el hub")
                 self.connected_signal.emit(True)
 
                 while self._running and client.is_connected:
