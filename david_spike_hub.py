@@ -87,16 +87,22 @@ send({"msg": "SPIKE ready"})
 buf = ""
 while True:
     # Drain all available characters before sending telemetry
+    got_data = False
     while _poll.poll(0):
+        got_data = True
         ch = stdin.read(1)
+        if not ch:
+            break
         if ch == "\n":
             line = buf.strip()
             buf  = ""
             if line:
+                send({"debug_recv": line})   # echo back so GUI confirms receipt
                 try:
                     dispatch(ujson.loads(line))
+                    send({"debug_dispatched": True})
                 except Exception as e:
-                    send({"error": str(e)})
+                    send({"error": str(e), "raw": line})
         else:
             buf += ch
 

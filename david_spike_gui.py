@@ -89,11 +89,15 @@ class BLEWorker(QThread):
                 while self._running and client.is_connected:
                     if self._cmd_queue:
                         line = self._cmd_queue.popleft()
-                        await client.write_gatt_char(
-                            PYBRICKS_TX_UUID,
-                            bytes([0x06]) + line.encode(),
-                            response=False
-                        )
+                        raw = bytes([0x06]) + line.encode()
+                        self.log_message.emit(f"[BLE WRITE] bytes={raw.hex()} text={line.strip()}")
+                        try:
+                            await client.write_gatt_char(
+                                PYBRICKS_TX_UUID, raw, response=False
+                            )
+                            self.log_message.emit("[BLE WRITE] OK")
+                        except Exception as wr_err:
+                            self.log_message.emit(f"[BLE WRITE ERROR] {wr_err}")
                     await asyncio.sleep(0.1)
 
                 await client.stop_notify(PYBRICKS_RX_UUID)
@@ -287,6 +291,10 @@ class MainWindow(QMainWindow):
         self.btn_ad.clicked.connect(lambda: self._cmd("arm_down"))
         self.btn_rst.clicked.connect(self._reset_position)
         left.addWidget(ctrl_box)
+
+        self.btn_ping = QPushButton("🔔  Ping (debug)")
+        self.btn_ping.clicked.connect(lambda: self._cmd("ping"))
+        left.addWidget(self.btn_ping)
 
         self.btn_export = QPushButton("💾  Exportar log a CSV")
         self.btn_export.clicked.connect(self._export_csv)
