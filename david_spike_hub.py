@@ -36,10 +36,15 @@ def battery_pct():
     return max(0, min(100, int((v - 7000) / 13)))
 
 def telemetry():
-    state   = drive.state()
-    heading = hub.imu.heading()
-    dist    = state[0]
-    rad     = math.radians(heading)
+    try:
+        dist = drive.distance()
+    except Exception:
+        dist = 0
+    try:
+        heading = hub.imu.heading()
+    except Exception:
+        heading = 0
+    rad = math.radians(heading)
     return {
         "x":       round(dist * math.sin(rad), 1),
         "y":       round(dist * math.cos(rad), 1),
