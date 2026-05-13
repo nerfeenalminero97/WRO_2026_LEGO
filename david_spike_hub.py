@@ -3,6 +3,7 @@ from pybricks.robotics import DriveBase
 from pybricks.pupdevices import Motor, ColorSensor
 from pybricks.parameters import Port, Color, Stop, Direction
 from pybricks.tools import wait
+import uselect  # Importamos uselect en lugar de _thread
 from usys import stdin, stdout
 import ujson
 import umath as math
@@ -26,6 +27,9 @@ COLOR_MAP = {
     Color.BLUE:   "BLUE",   Color.YELLOW: "YELLOW",
     Color.NONE:   "NONE",
 }
+
+def color_name(sensor):
+    return COLOR_MAP.get(sensor.color(), "UNKNOWN")
 
 def _safe(fn, default):
     try:
@@ -69,24 +73,27 @@ def dispatch(cmd):
         drive.reset()
         hub.imu.reset_heading(0)
 
+
 # ── Main loop ─────────────────────────────────────────────────────
 hub.light.on(Color.GREEN)
 send({"msg": "SPIKE ready"})
 
+# Configuramos el poller para leer stdin de forma asíncrona (sin bloquear)
+poller = uselect.poll()
+poller.register(stdin, uselect.POLLIN)
+
 buf = ""
+
 while True:
-    # stdin.read(1) raises OSError(EAGAIN) when no data is available.
-    # This is the only non-blocking read method that works in Pybricks BLE.
-    try:
-        while True:
+    # 1. Checar si llegó algún comando por Bluetooth y procesarlo
+    while poller.poll(0):
+        try:
             ch = stdin.read(1)
             if not ch:
                 break
-            if isinstance(ch, (bytes, bytearray)):
-                ch = ch.decode("utf-8", "ignore")
-            if ch == "\n":
+            if ch == '\n':
                 line = buf.strip()
-                buf  = ""
+                buf = ""
                 if line:
                     try:
                         dispatch(ujson.loads(line))
@@ -94,11 +101,14 @@ while True:
                         send({"error": str(e)})
             else:
                 buf += ch
-    except OSError:
-        pass  # sin datos disponibles — normal
+        except Exception:
+            pass
 
+    # 2. Enviar telemetría a tu interfaz en la compu
     try:
         send(telemetry())
     except Exception:
         pass
+        
+    # 3. Pequeña pausa para no saturar el hub ni ahogar la conexión BLE
     wait(50)
