@@ -84,54 +84,23 @@ _poll.register(stdin, uselect.POLLIN)
 hub.light.on(Color.GREEN)
 send({"msg": "SPIKE ready"})
 
-buf  = ""
-tick = 0
+buf = ""
 while True:
-    tick += 1
-
-    # poll(40) blocks up to 40 ms — gives BLE stack time to deliver data
-    # poll(0) misses BLE stdin because the firmware queues it asynchronously
-    try:
-        events = _poll.poll(40)
-    except Exception as pe:
-        send({"poll_err": str(pe)})
-        events = []
-
-    if events:
-        send({"poll_fired": tick})          # confirms poll ever detects stdin
-        try:
-            ch = stdin.read(1)
-        except OSError as oe:
-            ch = None
-            send({"read_err": str(oe)})
-
-        while ch:
-            if isinstance(ch, (bytes, bytearray)):
-                ch = ch.decode("utf-8", "ignore")
-            if ch == "\n":
-                line = buf.strip()
-                buf  = ""
-                if line:
-                    send({"debug_recv": line})
-                    try:
-                        dispatch(ujson.loads(line))
-                        send({"debug_dispatched": True})
-                    except Exception as e:
-                        send({"error": str(e), "raw": line})
-            else:
-                buf += ch
-            # try to grab next char without waiting
-            try:
-                ch = stdin.read(1) if _poll.poll(0) else None
-            except OSError:
-                ch = None
-
-    # heartbeat every ~2 s so we know hub is alive
-    if tick % 40 == 0:
-        send({"alive": tick})
+    while _poll.poll(0):
+        ch = stdin.read(1)
+        if ch == "\n":
+            line = buf.strip()
+            buf  = ""
+            if line:
+                try:
+                    dispatch(ujson.loads(line))
+                except Exception as e:
+                    send({"error": str(e)})
+        else:
+            buf += ch
 
     try:
         send(telemetry())
     except Exception:
         pass
-    wait(10)    # shorter wait so we don't miss fast bursts
+    wait(50)
