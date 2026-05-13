@@ -5,7 +5,8 @@ from pybricks.parameters import Port, Color, Stop, Direction
 from pybricks.tools import wait
 from usys import stdin, stdout
 import ujson
-import math
+import umath as math
+import uselect
 
 # ── Hardware (same ports as your original code) ──────────────────
 hub      = PrimeHub()
@@ -72,13 +73,17 @@ def dispatch(cmd):
         hub.imu.reset_heading(0)
 
 # ── Main loop ─────────────────────────────────────────────────────
+_poll = uselect.poll()
+_poll.register(stdin, uselect.POLLIN)
+
 hub.light.on(Color.GREEN)
 send({"msg": "SPIKE ready"})
 
 buf = ""
 while True:
-    ch = stdin.read(1)
-    if ch:
+    # Drain all available characters before sending telemetry
+    while _poll.poll(0):
+        ch = stdin.read(1)
         if ch == "\n":
             line = buf.strip()
             buf  = ""
@@ -91,4 +96,4 @@ while True:
             buf += ch
 
     send(telemetry())
-    wait(100)
+    wait(50)

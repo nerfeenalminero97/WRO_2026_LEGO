@@ -11,8 +11,8 @@ from bleak import BleakScanner, BleakClient
 
 # UUID del servicio serial de Pybricks (oficial)
 PYBRICKS_SERVICE_UUID = "c5f50001-8280-46da-89f4-6d8051e4aeef"
-PYBRICKS_TX_UUID      = "c5f50002-8280-46da-89f4-6d8051e4aeef"  # PC → Hub
-PYBRICKS_RX_UUID      = "c5f50003-8280-46da-89f4-6d8051e4aeef"  # Hub → PC
+PYBRICKS_TX_UUID      = "c5f50003-8280-46da-89f4-6d8051e4aeef"  # PC → Hub (write)
+PYBRICKS_RX_UUID      = "c5f50002-8280-46da-89f4-6d8051e4aeef"  # Hub → PC (notify)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -44,9 +44,11 @@ class BLEWorker(QThread):
         self.log_message.emit("Buscando SPIKE por Bluetooth...")
         try:
             device = await BleakScanner.find_device_by_filter(
-                lambda d, _: PYBRICKS_SERVICE_UUID.lower() in
-                             [str(u).lower() for u in (d.metadata.get("uuids") or [])],
-                timeout=10.0
+                lambda d, adv: (
+                    PYBRICKS_SERVICE_UUID.lower() in
+                    [str(u).lower() for u in (adv.service_uuids or [])]
+                ) or (d.name and "WRO 2026 Quetza" in d.name),
+                timeout=15.0
             )
         except Exception as e:
             self.log_message.emit(f"Error al escanear: {e}")
@@ -83,15 +85,14 @@ class BLEWorker(QThread):
                 self.connected_signal.emit(True)
 
                 while self._running and client.is_connected:
-                    # Enviar comandos encolados
-                    while self._cmd_queue:
+                    if self._cmd_queue:
                         line = self._cmd_queue.popleft()
                         await client.write_gatt_char(
                             PYBRICKS_TX_UUID,
                             line.encode(),
                             response=False
                         )
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.1)
 
                 await client.stop_notify(PYBRICKS_RX_UUID)
         except Exception as e:
