@@ -6,7 +6,6 @@ from pybricks.tools import wait
 from usys import stdin, stdout
 import ujson
 import umath as math
-import _thread
 
 # ── Hardware ──────────────────────────────────────────────────────
 hub      = PrimeHub()
@@ -27,9 +26,6 @@ COLOR_MAP = {
     Color.BLUE:   "BLUE",   Color.YELLOW: "YELLOW",
     Color.NONE:   "NONE",
 }
-
-def color_name(sensor):
-    return COLOR_MAP.get(sensor.color(), "UNKNOWN")
 
 def _safe(fn, default):
     try:
@@ -73,51 +69,33 @@ def dispatch(cmd):
         drive.reset()
         hub.imu.reset_heading(0)
 
-# ── Stdin reader thread ───────────────────────────────────────────
-# uselect.poll does NOT work with BLE stdin in Pybricks.
-# Blocking stdin.read(1) in a separate thread is the only reliable approach.
-_cmd_queue = []
-_lock      = _thread.allocate_lock()
+# ── Main loop ─────────────────────────────────────────────────────
+hub.light.on(Color.GREEN)
+send({"msg": "SPIKE ready"})
 
-def _stdin_reader():
-    buf = ""
-    while True:
-        try:
+buf = ""
+while True:
+    # stdin.read(1) raises OSError(EAGAIN) when no data is available.
+    # This is the only non-blocking read method that works in Pybricks BLE.
+    try:
+        while True:
             ch = stdin.read(1)
             if not ch:
-                continue
+                break
             if isinstance(ch, (bytes, bytearray)):
                 ch = ch.decode("utf-8", "ignore")
             if ch == "\n":
                 line = buf.strip()
                 buf  = ""
                 if line:
-                    _lock.acquire()
-                    _cmd_queue.append(line)
-                    _lock.release()
+                    try:
+                        dispatch(ujson.loads(line))
+                    except Exception as e:
+                        send({"error": str(e)})
             else:
                 buf += ch
-        except Exception:
-            pass
-
-_thread.start_new_thread(_stdin_reader, ())
-
-# ── Main loop ─────────────────────────────────────────────────────
-hub.light.on(Color.GREEN)
-send({"msg": "SPIKE ready"})
-
-while True:
-    # Drain any commands received by the reader thread
-    _lock.acquire()
-    pending = list(_cmd_queue)
-    _cmd_queue.clear()
-    _lock.release()
-
-    for line in pending:
-        try:
-            dispatch(ujson.loads(line))
-        except Exception as e:
-            send({"error": str(e)})
+    except OSError:
+        pass  # sin datos disponibles — normal
 
     try:
         send(telemetry())

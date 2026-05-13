@@ -83,19 +83,7 @@ class BLEWorker(QThread):
             async with BleakClient(device) as client:
                 self._client = client
                 await client.start_notify(PYBRICKS_RX_UUID, on_notify)
-                self.log_message.emit("✅ Conectado. Iniciando programa en el hub...")
-
-                # 0x00 = STOP cualquier programa corriendo, 0x01 = START
-                # Esto conecta stdin Y stdout a BLE (botón del hub solo conecta stdout)
-                await client.write_gatt_char(
-                    PYBRICKS_TX_UUID, bytes([0x00]), response=False
-                )
-                await asyncio.sleep(0.5)
-                await client.write_gatt_char(
-                    PYBRICKS_TX_UUID, bytes([0x01]), response=False
-                )
-                await asyncio.sleep(1.5)
-                self.log_message.emit("▶ Programa iniciado por BLE — espera luz verde en el hub")
+                self.log_message.emit("✅ Conectado por Bluetooth")
                 self.connected_signal.emit(True)
 
                 while self._running and client.is_connected:
