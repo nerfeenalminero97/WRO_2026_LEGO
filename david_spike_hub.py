@@ -35,26 +35,26 @@ def battery_pct():
     v = hub.battery.voltage()
     return max(0, min(100, int((v - 7000) / 13)))
 
+def _safe(fn, default):
+    try:
+        return fn()
+    except Exception:
+        return default
+
 def telemetry():
-    try:
-        dist = drive.distance()
-    except Exception:
-        dist = 0
-    try:
-        heading = hub.imu.heading()
-    except Exception:
-        heading = 0
-    rad = math.radians(heading)
+    dist    = _safe(drive.distance, 0)
+    heading = _safe(hub.imu.heading, 0)
+    rad     = math.radians(heading)
     return {
         "x":       round(dist * math.sin(rad), 1),
         "y":       round(dist * math.cos(rad), 1),
         "heading": round(heading, 1),
         "dist":    round(dist, 1),
-        "battery": battery_pct(),
-        "color1":  color_name(color1),
-        "color2":  color_name(color2),
-        "ref1":    color1.reflection(),
-        "ref2":    color2.reflection(),
+        "battery": _safe(lambda: max(0, min(100, int((hub.battery.voltage() - 7000) / 13))), -1),
+        "color1":  _safe(lambda: COLOR_MAP.get(color1.color(), "UNKNOWN"), "ERR"),
+        "color2":  _safe(lambda: COLOR_MAP.get(color2.color(), "UNKNOWN"), "ERR"),
+        "ref1":    _safe(color1.reflection, -1),
+        "ref2":    _safe(color2.reflection, -1),
     }
 
 def send(data):
