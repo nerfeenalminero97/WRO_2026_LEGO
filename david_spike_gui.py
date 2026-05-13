@@ -66,7 +66,9 @@ class BLEWorker(QThread):
 
         def on_notify(_, data: bytearray):
             nonlocal buf
-            buf += data.decode(errors="ignore")
+            # Pybricks prefixes each notification with a 1-byte event type (0x01 = stdout)
+            payload = data[1:] if len(data) > 1 and data[0] == 0x01 else data
+            buf += payload.decode(errors="ignore")
             while "\n" in buf:
                 line, buf = buf.split("\n", 1)
                 line = line.strip()
@@ -74,7 +76,7 @@ class BLEWorker(QThread):
                     try:
                         self.telemetry_received.emit(json.loads(line))
                     except json.JSONDecodeError:
-                        self.log_message.emit(f"JSON inválido: {line}")
+                        self.log_message.emit(f"MSG hub: {line}")
 
         # ── Conectar ─────────────────────────────────────────
         try:
@@ -89,7 +91,7 @@ class BLEWorker(QThread):
                         line = self._cmd_queue.popleft()
                         await client.write_gatt_char(
                             PYBRICKS_TX_UUID,
-                            line.encode(),
+                            bytes([0x01]) + line.encode(),
                             response=False
                         )
                     await asyncio.sleep(0.1)
