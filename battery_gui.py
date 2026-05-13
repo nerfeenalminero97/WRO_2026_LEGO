@@ -1,6 +1,6 @@
 """
 spike_battery_gui.py
-GUI para leer la batería del SPIKE Prime v5 vía BLE.
+GUI para leer la batería del SPIKE Prime v5 vía BLE (Pybricks).
 
 Requisitos:
     pip install bleak
@@ -15,274 +15,258 @@ import asyncio
 import struct
 import threading
 import tkinter as tk
-from tkinter import font as tkfont
+from tkinter import scrolledtext
 
 from bleak import BleakScanner
+from bleak.backends.scanner import AdvertisementData
 
-# ── Pybricks BLE Advertisement constants ────────────────────────────────────
-# Pybricks usa el Manufacturer ID 0x0397 (Little Endian) en los advertisements.
-PYBRICKS_MFR_ID = 0x0397
-# El canal 0 es el primer byte del payload tras el header de Pybricks.
-TARGET_CHANNEL = 0
+# ── Protocolo Pybricks (spec oficial) ───────────────────────────────────────
+# https://github.com/pybricks/technical-info/blob/master/pybricks-ble-broadcast-observe.md
+PYBRICKS_MFR_ID = 0x0397   # LEGO Company Identifier
+TARGET_CHANNEL  = 0
 
-# Voltaje nominal de batería AAA / Li-ion LEGO en mV
-BATTERY_FULL = 8400    # ~8.4 V (2 celdas Li-ion full)
-BATTERY_EMPTY = 6000   # ~6.0 V (límite seguro)
+# Tipos de dato Pybricks
+TYPE_SINGLE = 0
+TYPE_TRUE   = 1
+TYPE_FALSE  = 2
+TYPE_INT    = 3
+TYPE_FLOAT  = 4
+TYPE_STR    = 5
+TYPE_BYTES  = 6
+
+# Voltajes de referencia SPIKE Prime recargable (mV)
+BATTERY_FULL  = 8350
+BATTERY_EMPTY = 6000
 
 
-def parse_pybricks_advertisement(mfr_data: bytes):
+def decode_pybricks_payload(data: bytes):
     """
-    Intenta parsear un advertisement de Pybricks y extraer
-    (voltage_mV, current_mA) del canal 0.
-
-    Formato Pybricks (simplificado):
-        [0]   : tipo de hub (ignorar)
-        [1]   : canal
-        [2..] : datos (tuple empaquetado como TLV simple)
+    Decodifica manufacturer data de Pybricks.
+    data[0]  = canal
+    data[1:] = valores: header_byte=(type<<5|length) seguido de value_bytes
+    Retorna lista de valores Python, o None si canal != TARGET_CHANNEL.
     """
-    if len(mfr_data) < 3:
+    if not data:
+        return None
+    if data[0] != TARGET_CHANNEL:
         return None
 
-    channel = mfr_data[1]
-    if channel != TARGET_CHANNEL:
-        return None
-
-    payload = mfr_data[2:]
-
-    # Pybricks empaqueta tuples de ints como valores TLV.
-    # Cada valor tiene: 1 byte tipo + N bytes dato.
-    # Tipo 0x20 = int de 2 bytes (signed int16)
-    # Tipo 0x40 = int de 4 bytes (signed int32)
-    # Tipo 0x00 = int de 1 byte (signed int8)
     values = []
-    i = 0
-    while i < len(payload):
-        if i >= len(payload):
-            break
-        type_byte = payload[i]
-        i += 1
+    i = 1
+    while i < len(data):
+        header    = data[i]; i += 1
+        val_type  = (header >> 5) & 0x07
+        val_len   = header & 0x1F
 
-        if type_byte == 0x00:          # int8
-            if i + 1 > len(payload): break
-            val = struct.unpack_from("b", payload, i)[0]
-            i += 1
-            values.append(val)
-        elif type_byte == 0x20:        # int16
-            if i + 2 > len(payload): break
-            val = struct.unpack_from("<h", payload, i)[0]
-            i += 2
-            values.append(val)
-        elif type_byte == 0x40:        # int32
-            if i + 4 > len(payload): break
-            val = struct.unpack_from("<i", payload, i)[0]
-            i += 4
-            values.append(val)
-        elif type_byte == 0x01:        # float (5 bytes: tipo + 4 data)
-            if i + 4 > len(payload): break
-            val = struct.unpack_from("<f", payload, i)[0]
-            i += 4
-            values.append(val)
+        if val_type == TYPE_SINGLE:
+            continue  # solo marca que el siguiente es un objeto único
+        elif val_type == TYPE_TRUE:
+            values.append(True)
+        elif val_type == TYPE_FALSE:
+            values.append(False)
+        elif val_type == TYPE_INT:
+            if i + val_len > len(data): break
+            raw = data[i:i + val_len]
+            if val_len == 1:
+                v = struct.unpack("b", raw)[0]
+            elif val_len == 2:
+                v = struct.unpack("<h", raw)[0]
+            else:
+                v = struct.unpack("<i", raw)[0]
+            values.append(v); i += val_len
+        elif val_type == TYPE_FLOAT:
+            if i + 4 > len(data): break
+            v = struct.unpack_from("<f", data, i)[0]
+            values.append(v); i += 4
+        elif val_type in (TYPE_STR, TYPE_BYTES):
+            if i + val_len > len(data): break
+            raw = data[i:i + val_len]
+            values.append(raw.decode("utf-8", errors="replace") if val_type == TYPE_STR else bytes(raw))
+            i += val_len
         else:
-            # Tipo desconocido — salir
-            break
+            i += val_len  # tipo desconocido, saltar
 
-    if len(values) >= 2:
-        return int(values[0]), int(values[1])
-    return None
+    return values or None
 
 
-class SpikeBatteryApp:
+def voltage_to_pct(mv: int) -> int:
+    return max(0, min(100, int((mv - BATTERY_EMPTY) / (BATTERY_FULL - BATTERY_EMPTY) * 100)))
+
+
+def pct_color(pct: int) -> str:
+    return "#00D4FF" if pct > 60 else ("#FFB800" if pct > 30 else "#FF4444")
+
+
+# ── GUI ───────────────────────────────────────────────────────────────────────
+class App:
+    BG, CARD, TEXT, MUTED = "#0F0F0F", "#1A1A1A", "#FFFFFF", "#555555"
+
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("SPIKE Prime — Battery Monitor")
+        self.root.configure(bg=self.BG)
         self.root.resizable(False, False)
-        self.root.configure(bg="#0F0F0F")
-
-        self._voltage = None
-        self._current = None
-        self._scanning = False
-        self._device_name = "—"
-
-        self._build_ui()
-        self._start_ble_loop()
-
-    # ── UI ────────────────────────────────────────────────────────────────
-
-    def _build_ui(self):
-        PAD = 24
-        BG = "#0F0F0F"
-        CARD = "#1A1A1A"
-        ACCENT = "#00D4FF"
-        TEXT = "#FFFFFF"
-        MUTED = "#666666"
-
-        # ── Header ──────────────────────────────────────────────────────
-        header = tk.Frame(self.root, bg=BG)
-        header.pack(fill="x", padx=PAD, pady=(PAD, 0))
-
-        tk.Label(header, text="🔵", bg=BG, font=("Helvetica", 20)).pack(side="left")
-        tk.Label(header, text="  SPIKE Prime v5", bg=BG, fg=TEXT,
-                 font=("Helvetica", 16, "bold")).pack(side="left")
-
-        self.status_dot = tk.Label(header, text="●", bg=BG, fg=MUTED,
-                                   font=("Helvetica", 14))
-        self.status_dot.pack(side="right")
-        self.status_lbl = tk.Label(header, text="Buscando...", bg=BG, fg=MUTED,
-                                   font=("Helvetica", 10))
-        self.status_lbl.pack(side="right", padx=(0, 4))
-
-        tk.Frame(self.root, bg="#2A2A2A", height=1).pack(fill="x", padx=PAD, pady=12)
-
-        # ── Battery percentage card ──────────────────────────────────────
-        pct_card = tk.Frame(self.root, bg=CARD, relief="flat")
-        pct_card.pack(fill="x", padx=PAD, pady=(0, 12))
-
-        tk.Label(pct_card, text="NIVEL DE BATERÍA", bg=CARD, fg=MUTED,
-                 font=("Helvetica", 9, "bold")).pack(anchor="w", padx=16, pady=(14, 0))
-
-        self.pct_lbl = tk.Label(pct_card, text="—", bg=CARD, fg=ACCENT,
-                                font=("Helvetica", 56, "bold"))
-        self.pct_lbl.pack(anchor="w", padx=16)
-
-        # Progress bar canvas
-        self.bar_canvas = tk.Canvas(pct_card, bg=CARD, height=14,
-                                    highlightthickness=0, relief="flat")
-        self.bar_canvas.pack(fill="x", padx=16, pady=(0, 16))
-        self.bar_canvas.bind("<Configure>", self._redraw_bar)
         self._bar_pct = 0
+        self._debug = tk.BooleanVar(value=False)
+        self._build()
+        self._start_ble()
 
-        # ── Voltage + Current row ────────────────────────────────────────
-        row = tk.Frame(self.root, bg=BG)
-        row.pack(fill="x", padx=PAD, pady=(0, PAD))
+    def _build(self):
+        P = 20
+        # Header
+        h = tk.Frame(self.root, bg=self.BG)
+        h.pack(fill="x", padx=P, pady=(P, 0))
+        tk.Label(h, text="SPIKE Prime v5", bg=self.BG, fg=self.TEXT,
+                 font=("Helvetica", 15, "bold")).pack(side="left")
+        self.sdot = tk.Label(h, text="●", bg=self.BG, fg=self.MUTED, font=("Helvetica", 13))
+        self.sdot.pack(side="right")
+        self.slbl = tk.Label(h, text="Buscando...", bg=self.BG, fg=self.MUTED, font=("Helvetica", 10))
+        self.slbl.pack(side="right", padx=(0, 4))
 
-        self.volt_lbl = self._stat_card(row, "VOLTAJE", "—", "mV", CARD, ACCENT)
-        self.volt_lbl.pack(side="left", expand=True, fill="both", padx=(0, 6))
+        tk.Frame(self.root, bg="#252525", height=1).pack(fill="x", padx=P, pady=10)
 
-        self.curr_lbl = self._stat_card(row, "CORRIENTE", "—", "mA", CARD, "#FFB800")
-        self.curr_lbl.pack(side="left", expand=True, fill="both", padx=(6, 0))
+        # Battery % card
+        c = tk.Frame(self.root, bg=self.CARD)
+        c.pack(fill="x", padx=P, pady=(0, 10))
+        tk.Label(c, text="NIVEL DE BATERÍA", bg=self.CARD, fg=self.MUTED,
+                 font=("Helvetica", 8, "bold")).pack(anchor="w", padx=14, pady=(12, 0))
+        self.pct_lbl = tk.Label(c, text="—", bg=self.CARD, fg="#00D4FF",
+                                font=("Helvetica", 52, "bold"))
+        self.pct_lbl.pack(anchor="w", padx=14)
+        self.bar = tk.Canvas(c, bg=self.CARD, height=12, highlightthickness=0)
+        self.bar.pack(fill="x", padx=14, pady=(2, 14))
+        self.bar.bind("<Configure>", lambda e: self._draw_bar())
 
-        # ── Refresh button ───────────────────────────────────────────────
-        tk.Button(
-            self.root, text="⟳  Reiniciar escaneo",
-            bg="#1E1E1E", fg=TEXT, activebackground="#2A2A2A",
-            activeforeground=ACCENT, relief="flat", cursor="hand2",
-            font=("Helvetica", 10), padx=12, pady=8,
-            command=self._restart_scan
-        ).pack(pady=(0, PAD))
+        # Stats row
+        row = tk.Frame(self.root, bg=self.BG)
+        row.pack(fill="x", padx=P, pady=(0, P))
+        self.vf = self._stat(row, "VOLTAJE",   "mV", "#00D4FF")
+        self.vf.pack(side="left", expand=True, fill="both", padx=(0, 5))
+        self.cf = self._stat(row, "CORRIENTE", "mA", "#FFB800")
+        self.cf.pack(side="left", expand=True, fill="both", padx=(5, 0))
 
-    def _stat_card(self, parent, label, value, unit, bg, color):
-        frame = tk.Frame(parent, bg=bg)
-        tk.Label(frame, text=label, bg=bg, fg="#666666",
-                 font=("Helvetica", 9, "bold")).pack(anchor="w", padx=14, pady=(12, 0))
-        val_frame = tk.Frame(frame, bg=bg)
-        val_frame.pack(anchor="w", padx=14, pady=(0, 12))
-        lbl = tk.Label(val_frame, text=value, bg=bg, fg=color,
-                       font=("Helvetica", 28, "bold"))
+        # Debug toggle
+        ctrl = tk.Frame(self.root, bg=self.BG)
+        ctrl.pack(fill="x", padx=P, pady=(0, 4))
+        tk.Checkbutton(ctrl, text="Mostrar log BLE (debug)", variable=self._debug,
+                       bg=self.BG, fg=self.MUTED, selectcolor=self.BG,
+                       activebackground=self.BG, activeforeground=self.MUTED,
+                       font=("Helvetica", 9), command=self._toggle_log).pack(side="left")
+
+        # Log box (oculto por defecto)
+        self.log_frame = tk.Frame(self.root, bg=self.BG)
+        self.log_box = scrolledtext.ScrolledText(
+            self.log_frame, height=9, bg="#111", fg="#0F0",
+            font=("Courier", 9), state="disabled", relief="flat"
+        )
+        self.log_box.pack(fill="both", expand=True, padx=P, pady=(0, P))
+
+    def _stat(self, parent, label, unit, color):
+        f = tk.Frame(parent, bg=self.CARD)
+        tk.Label(f, text=label, bg=self.CARD, fg=self.MUTED,
+                 font=("Helvetica", 8, "bold")).pack(anchor="w", padx=12, pady=(10, 0))
+        r = tk.Frame(f, bg=self.CARD)
+        r.pack(anchor="w", padx=12, pady=(0, 10))
+        lbl = tk.Label(r, text="—", bg=self.CARD, fg=color, font=("Helvetica", 26, "bold"))
         lbl.pack(side="left")
-        tk.Label(val_frame, text=f" {unit}", bg=bg, fg="#666666",
-                 font=("Helvetica", 12)).pack(side="left", anchor="s", pady=4)
-        frame._value_label = lbl
-        return frame
+        tk.Label(r, text=f" {unit}", bg=self.CARD, fg=self.MUTED,
+                 font=("Helvetica", 11)).pack(side="left", anchor="s", pady=3)
+        f._val = lbl
+        return f
 
-    def _redraw_bar(self, event=None):
-        self.bar_canvas.delete("all")
-        w = self.bar_canvas.winfo_width()
-        h = 14
-        r = 7  # corner radius
-
-        # Background track
-        self.bar_canvas.create_rounded_rect = lambda *a, **kw: None
-        self._rounded_rect(self.bar_canvas, 0, 0, w, h, r, fill="#2A2A2A", outline="")
-
-        # Fill
-        fill_w = max(0, int(w * self._bar_pct / 100))
-        if fill_w > 0:
-            color = self._bar_color(self._bar_pct)
-            self._rounded_rect(self.bar_canvas, 0, 0, fill_w, h, r, fill=color, outline="")
-
-    def _rounded_rect(self, canvas, x1, y1, x2, y2, r, **kwargs):
-        canvas.create_arc(x1, y1, x1+2*r, y1+2*r, start=90, extent=90, style="pieslice", **kwargs)
-        canvas.create_arc(x2-2*r, y1, x2, y1+2*r, start=0, extent=90, style="pieslice", **kwargs)
-        canvas.create_arc(x2-2*r, y2-2*r, x2, y2, start=270, extent=90, style="pieslice", **kwargs)
-        canvas.create_arc(x1, y2-2*r, x1+2*r, y2, start=180, extent=90, style="pieslice", **kwargs)
-        canvas.create_rectangle(x1+r, y1, x2-r, y2, **kwargs)
-        canvas.create_rectangle(x1, y1+r, x2, y2-r, **kwargs)
-
-    def _bar_color(self, pct):
-        if pct > 60:
-            return "#00D4FF"
-        elif pct > 30:
-            return "#FFB800"
+    def _toggle_log(self):
+        if self._debug.get():
+            self.log_frame.pack(fill="x")
         else:
-            return "#FF4444"
+            self.log_frame.pack_forget()
+        self.root.geometry("")
 
-    # ── Update UI ─────────────────────────────────────────────────────────
+    def _draw_bar(self):
+        self.bar.delete("all")
+        w, h, r = self.bar.winfo_width(), 12, 6
+        self._rr(0, 0, w, h, r, fill="#2A2A2A", outline="")
+        fw = max(0, int(w * self._bar_pct / 100))
+        if fw:
+            self._rr(0, 0, fw, h, r, fill=pct_color(self._bar_pct), outline="")
 
-    def _update_ui(self, voltage_mv, current_ma):
-        pct = max(0, min(100, int(
-            (voltage_mv - BATTERY_EMPTY) / (BATTERY_FULL - BATTERY_EMPTY) * 100
-        )))
+    def _rr(self, x1, y1, x2, y2, r, **kw):
+        c = self.bar
+        c.create_arc(x1,    y1,    x1+2*r, y1+2*r, start=90,  extent=90, style="pieslice", **kw)
+        c.create_arc(x2-2*r,y1,    x2,     y1+2*r, start=0,   extent=90, style="pieslice", **kw)
+        c.create_arc(x2-2*r,y2-2*r,x2,     y2,     start=270, extent=90, style="pieslice", **kw)
+        c.create_arc(x1,    y2-2*r,x1+2*r, y2,     start=180, extent=90, style="pieslice", **kw)
+        c.create_rectangle(x1+r, y1, x2-r, y2, **kw)
+        c.create_rectangle(x1, y1+r, x2, y2-r, **kw)
+
+    # ── Actualizar UI ─────────────────────────────────────────────────────────
+    def update_battery(self, mv: int, ma: int):
+        pct = voltage_to_pct(mv)
         self._bar_pct = pct
+        self.pct_lbl.config(text=f"{pct}%", fg=pct_color(pct))
+        self.vf._val.config(text=str(mv))
+        self.cf._val.config(text=str(ma))
+        self.slbl.config(text="Conectado ✓", fg="#00FF88")
+        self.sdot.config(fg="#00FF88")
+        self._draw_bar()
 
-        self.pct_lbl.config(text=f"{pct}%", fg=self._bar_color(pct))
-        self.volt_lbl._value_label.config(text=str(voltage_mv))
-        self.curr_lbl._value_label.config(text=str(current_ma))
+    def log(self, msg: str):
+        if not self._debug.get():
+            return
+        self.log_box.config(state="normal")
+        self.log_box.insert("end", msg + "\n")
+        self.log_box.see("end")
+        self.log_box.config(state="disabled")
 
-        self.status_lbl.config(text="Conectado", fg="#00FF88")
-        self.status_dot.config(fg="#00FF88")
+    # ── BLE ───────────────────────────────────────────────────────────────────
+    def _start_ble(self):
+        threading.Thread(target=lambda: asyncio.run(self._scan()), daemon=True).start()
 
-        self._redraw_bar()
+    async def _scan(self):
+        self.root.after(0, self.log, "Iniciando escáner BLE...")
 
-    def _set_scanning(self, scanning: bool):
-        if scanning:
-            self.status_lbl.config(text="Buscando...", fg="#666666")
-            self.status_dot.config(fg="#666666")
-        else:
-            self.status_lbl.config(text="Sin señal", fg="#FF4444")
-            self.status_dot.config(fg="#FF4444")
+        def cb(device, adv: AdvertisementData):
+            mfr = adv.manufacturer_data
+            if not mfr:
+                return
 
-    # ── BLE ───────────────────────────────────────────────────────────────
+            # Log todos los manufacturer IDs encontrados
+            ids = [hex(k) for k in mfr.keys()]
+            self.root.after(0, self.log,
+                f"[{device.address}] {device.name or 'N/A'} ids={ids}")
 
-    def _start_ble_loop(self):
-        self._ble_thread = threading.Thread(target=self._run_ble_loop, daemon=True)
-        self._ble_thread.start()
-
-    def _run_ble_loop(self):
-        asyncio.run(self._ble_scan_loop())
-
-    async def _ble_scan_loop(self):
-        self._scanning = True
-        self.root.after(0, self._set_scanning, True)
-
-        def detection_callback(device, advertisement_data):
-            mfr = advertisement_data.manufacturer_data
             if PYBRICKS_MFR_ID not in mfr:
                 return
-            data = mfr[PYBRICKS_MFR_ID]
-            result = parse_pybricks_advertisement(data)
-            if result:
-                voltage, current = result
-                self.root.after(0, self._update_ui, voltage, current)
 
-        async with BleakScanner(detection_callback=detection_callback) as scanner:
-            # Escanear indefinidamente
+            raw = mfr[PYBRICKS_MFR_ID]
+            self.root.after(0, self.log, f"  Pybricks raw={raw.hex()} canal={raw[0] if raw else '?'}")
+
+            vals = decode_pybricks_payload(raw)
+            if vals is None:
+                self.root.after(0, self.log, "  → Canal distinto, ignorando")
+                return
+
+            self.root.after(0, self.log, f"  → Decodificado: {vals}")
+            if len(vals) >= 2:
+                self.root.after(0, self.update_battery, int(vals[0]), int(vals[1]))
+
+        # Intentar passive scanning (captura ADV_NONCONN_IND del SPIKE)
+        try:
+            scanner = BleakScanner(detection_callback=cb, scanning_mode="passive")
+            self.root.after(0, self.log, "Modo: passive scan")
+        except Exception as e:
+            scanner = BleakScanner(detection_callback=cb)
+            self.root.after(0, self.log, f"Modo: active scan (passive no soportado: {e})")
+
+        async with scanner:
+            self.root.after(0, self.log, "Escaneando... (asegúrate que el hub está corriendo el script)")
             while True:
                 await asyncio.sleep(1)
-
-    def _restart_scan(self):
-        self._set_scanning(True)
-        self.pct_lbl.config(text="—", fg="#00D4FF")
-        self.volt_lbl._value_label.config(text="—")
-        self.curr_lbl._value_label.config(text="—")
-        self._bar_pct = 0
-        self._redraw_bar()
-        # El thread de BLE es daemon y ya está corriendo continuamente
 
 
 def main():
     root = tk.Tk()
-    root.minsize(380, 320)
-    app = SpikeBatteryApp(root)
+    root.minsize(360, 240)
+    App(root)
     root.mainloop()
 
 
