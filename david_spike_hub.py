@@ -20,7 +20,7 @@ hub = PrimeHub(observe_channels=[1])
 
 # Rueda derecha = Puerto F (gira en dirección normal)
 # Rueda izquierda = Puerto B (gira al revés para ir hacia adelante)
-right_motor = Motor(Port.F)
+right_motor = Motor(Port.A)
 left_motor  = Motor(Port.B, Direction.COUNTERCLOCKWISE)
 
 # DriveBase: ajusta wheel_diameter y axle_track a tu robot (mm)
