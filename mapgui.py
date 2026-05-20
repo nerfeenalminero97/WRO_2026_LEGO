@@ -1,13 +1,6 @@
 """
 wro_gui.py  —  WRO 2026 Mosaic Masters
 =======================================
-- La PC controla el robot (WASD / botones)
-- La PC calcula X,Y por dead reckoning (integra sus propios comandos)
-- El hub solo manda el color detectado
-- Click izquierdo en el mapa = fijar posición actual del robot
-- Click derecho = agregar punto manual
-- Exporta XLSX con mapa raw, ruta óptima y grid visual
-
 pip install bleak openpyxl
 pip install winrt-Windows.Devices.Bluetooth.Advertisement
 pip install winrt-Windows.Storage.Streams
@@ -26,10 +19,11 @@ from bleak import BleakScanner
 #  PROTOCOLO PYBRICKS
 # ════════════════════════════════════════════════════════════════
 PYBRICKS_MFR_ID = 0x0397
-TX_CHANNEL = 1   # PC → hub
-RX_CHANNEL = 0   # hub → PC (solo color)
+TX_CHANNEL = 1
+RX_CHANNEL = 0
 TYPE_INT   = 3
-TURN_RATE  = 200  # deg/s
+TURN_RATE  = 200   # deg/s giro
+MOTOR_SPD  = 300   # deg/s motores extra
 
 def _enc(v: int) -> bytes:
     if -128 <= v <= 127:
@@ -39,11 +33,13 @@ def _enc(v: int) -> bytes:
     else:
         return bytes([(TYPE_INT << 5) | 4]) + struct.pack("<i", v)
 
-def encode_cmd(speed: int, turn: int) -> bytes:
-    return bytes([TX_CHANNEL]) + _enc(speed) + _enc(turn)
+def encode_cmd(speed: int, turn: int, motor_cmd: int = 0, motor_val: int = 0) -> bytes:
+    """Empaqueta (speed, turn, motor_cmd, motor_val) en formato Pybricks."""
+    return (bytes([TX_CHANNEL])
+            + _enc(speed) + _enc(turn)
+            + _enc(motor_cmd) + _enc(motor_val))
 
 def decode_color(data: bytes):
-    """Extrae el color_code del advertisement del hub."""
     if not data or data[0] != RX_CHANNEL:
         return None
     i = 1
@@ -63,21 +59,18 @@ def decode_color(data: bytes):
     return None
 
 # ════════════════════════════════════════════════════════════════
-#  BLE PUBLISHER  (mismo que funcionaba)
+#  BLE PUBLISHER  — hilo dedicado, latencia ~50ms
 # ════════════════════════════════════════════════════════════════
 class BLEPublisher:
-    """
-    Hilo dedicado que hace advertising continuo a 50ms.
-    Solo recrea el publisher cuando cambia el comando,
-    sin pasar por threading.Thread en cada keypress.
-    """
     INTERVAL = 0.05
 
     def __init__(self):
-        self._speed    = 0
-        self._turn     = 0
-        self._stop_evt = threading.Event()
-        self._thread   = threading.Thread(target=self._loop, daemon=True)
+        self._speed     = 0
+        self._turn      = 0
+        self._motor_cmd = 0
+        self._motor_val = 0
+        self._stop_evt  = threading.Event()
+        self._thread    = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
     def _ibuf(self, data: bytes):
@@ -86,7 +79,7 @@ class BLEPublisher:
         for b in data: w.write_byte(b)
         return w.detach_buffer()
 
-    def _make_pub(self, speed, turn):
+    def _make_pub(self, speed, turn, mc, mv):
         from winrt.windows.devices.bluetooth.advertisement import (
             BluetoothLEAdvertisementPublisher,
             BluetoothLEAdvertisement,
@@ -94,7 +87,7 @@ class BLEPublisher:
         )
         mfr = BluetoothLEManufacturerData()
         mfr.company_id = PYBRICKS_MFR_ID
-        mfr.data = self._ibuf(encode_cmd(speed, turn))
+        mfr.data = self._ibuf(encode_cmd(speed, turn, mc, mv))
         adv = BluetoothLEAdvertisement()
         adv.manufacturer_data.append(mfr)
         pub = BluetoothLEAdvertisementPublisher(adv)
@@ -102,26 +95,25 @@ class BLEPublisher:
         return pub
 
     def _loop(self):
-        pub = None; cur_s = None; cur_t = None
+        pub = None
+        cur = (None, None, None, None)
         while not self._stop_evt.is_set():
-            s, t = self._speed, self._turn
-            if s != cur_s or t != cur_t:
-                # Comando cambió → recrear inmediatamente
+            nxt = (self._speed, self._turn, self._motor_cmd, self._motor_val)
+            if nxt != cur or pub is None:
                 if pub:
                     try: pub.stop()
                     except: pass
                 try:
-                    pub = self._make_pub(s, t)
-                    cur_s, cur_t = s, t
+                    pub = self._make_pub(*nxt)
+                    cur = nxt
                 except Exception as e:
                     print(f"[BLE TX] {e}"); pub = None
             else:
-                # Refrescar el mismo comando (mantiene vivo el advertisement)
                 if pub:
                     try: pub.stop()
                     except: pass
                 try:
-                    pub = self._make_pub(s, t)
+                    pub = self._make_pub(*nxt)
                 except Exception as e:
                     print(f"[BLE TX refresh] {e}"); pub = None
             time.sleep(self.INTERVAL)
@@ -129,45 +121,36 @@ class BLEPublisher:
             try: pub.stop()
             except: pass
 
-    def send(self, speed: int, turn: int):
-        """No-op si no cambió — el hilo lo detecta en su próxima iteración."""
-        self._speed = speed
-        self._turn  = turn
+    def send(self, speed: int, turn: int, motor_cmd: int = 0, motor_val: int = 0):
+        self._speed     = speed
+        self._turn      = turn
+        self._motor_cmd = motor_cmd
+        self._motor_val = motor_val
 
     def stop(self):
         self._stop_evt.set()
-        self._pub = None
 
 # ════════════════════════════════════════════════════════════════
-#  DEAD RECKONING  (la PC calcula posición integrando comandos)
+#  DEAD RECKONING
 # ════════════════════════════════════════════════════════════════
 class DeadReckoning:
-    """
-    Integra (speed mm/s, turn deg/s) cada DT segundos para estimar X,Y,heading.
-    heading=0 → +Y, heading=90 → +X  (misma convención que Pybricks)
-    """
-    DT = 0.1  # segundos (= intervalo del loop)
+    DT = 0.1  # 100ms loop
 
     def __init__(self):
-        self.x       = 0.0
-        self.y       = 0.0
-        self.heading = 0.0  # grados
+        self.x = 0.0; self.y = 0.0; self.heading = 0.0
 
     def reset(self, x=0.0, y=0.0, heading=0.0):
         self.x = x; self.y = y; self.heading = heading
 
-    def update(self, speed_mm_s: float, turn_deg_s: float):
-        """Llamar cada DT segundos con el comando actual."""
-        self.heading += turn_deg_s * self.DT
-        self.heading  = self.heading % 360
+    def update(self, speed: float, turn: float):
+        self.heading = (self.heading + turn * self.DT) % 360
         rad = math.radians(self.heading)
-        dist = speed_mm_s * self.DT
+        dist = speed * self.DT
         self.x += dist * math.sin(rad)
         self.y += dist * math.cos(rad)
 
     @property
-    def pos(self):
-        return (self.x, self.y)
+    def pos(self): return (self.x, self.y)
 
 # ════════════════════════════════════════════════════════════════
 #  COLORES WRO 2026
@@ -180,8 +163,8 @@ COLORS = {
     4: {"name": "Blanco",   "tk": "#CCCCCC", "xlsx": "CCCCCC", "r": 10},
     5: {"name": "Rojo",     "tk": "#FF4444", "xlsx": "FF4444", "r": 8},
 }
-FIELD_W = 1200.0   # mm
-FIELD_H =  900.0   # mm
+FIELD_W = 1200.0
+FIELD_H =  900.0
 
 # ════════════════════════════════════════════════════════════════
 #  RUTA ÓPTIMA
@@ -189,8 +172,7 @@ FIELD_H =  900.0   # mm
 def calc_route(points):
     groups = {}
     for p in points:
-        if p["c"] != 0:
-            groups.setdefault(p["c"], []).append(p)
+        if p["c"] != 0: groups.setdefault(p["c"], []).append(p)
     route = []
     for c in [1, 3, 2, 4, 5]:
         grp = list(groups.get(c, []))
@@ -211,29 +193,24 @@ def export_xlsx(points, route, path):
 
     def H(ws, r, c, v):
         cell = ws.cell(row=r, column=c, value=v)
-        cell.font      = Font(bold=True, name="Arial", color="FFFFFF", size=10)
-        cell.fill      = PatternFill("solid", start_color="0F3460")
-        cell.alignment = Alignment(horizontal="center")
-        cell.border    = brd
+        cell.font = Font(bold=True, name="Arial", color="FFFFFF", size=10)
+        cell.fill = PatternFill("solid", start_color="0F3460")
+        cell.alignment = Alignment(horizontal="center"); cell.border = brd
 
     def D(ws, r, c, v):
         cell = ws.cell(row=r, column=c, value=v)
         cell.alignment = Alignment(horizontal="center")
-        cell.border    = brd
-        cell.font      = Font(name="Arial", size=10)
+        cell.border = brd; cell.font = Font(name="Arial", size=10)
 
     def CC(ws, r, c, ci, v):
         cell = ws.cell(row=r, column=c, value=v)
-        cell.fill      = PatternFill("solid", start_color=COLORS[ci]["xlsx"])
+        cell.fill = PatternFill("solid", start_color=COLORS[ci]["xlsx"])
         txt = "000000" if ci in (1, 4, 0) else "FFFFFF"
-        cell.font      = Font(name="Arial", color=txt, size=10)
-        cell.alignment = Alignment(horizontal="center")
-        cell.border    = brd
+        cell.font = Font(name="Arial", color=txt, size=10)
+        cell.alignment = Alignment(horizontal="center"); cell.border = brd
 
-    # Hoja 1: Puntos raw
     ws1 = wb.active; ws1.title = "Mapa Raw"
-    for c, h in enumerate(["#","X (mm)","Y (mm)","Color","Codigo"], 1):
-        H(ws1, 1, c, h)
+    for c, h in enumerate(["#","X (mm)","Y (mm)","Color","Codigo"], 1): H(ws1,1,c,h)
     for i, p in enumerate(points, 1):
         ci = p["c"]
         D(ws1,i+1,1,i); D(ws1,i+1,2,round(p["x"])); D(ws1,i+1,3,round(p["y"]))
@@ -241,18 +218,15 @@ def export_xlsx(points, route, path):
     for w, c in zip([5,12,12,14,10], range(1,6)):
         ws1.column_dimensions[openpyxl.utils.get_column_letter(c)].width = w
 
-    # Hoja 2: Ruta óptima
     ws2 = wb.create_sheet("Ruta Optima")
-    for c, h in enumerate(["Paso","X (mm)","Y (mm)","Color","Dist (mm)","Acum (mm)"], 1):
-        H(ws2, 1, c, h)
+    for c, h in enumerate(["Paso","X (mm)","Y (mm)","Color","Dist (mm)","Acum (mm)"], 1): H(ws2,1,c,h)
     prev = None; acum = 0
     for step, p in enumerate(route, 1):
-        ci   = p["c"]
+        ci = p["c"]
         dist = round(math.hypot(p["x"]-prev["x"], p["y"]-prev["y"])) if prev else 0
         acum += dist
         D(ws2,step+1,1,step); D(ws2,step+1,2,round(p["x"])); D(ws2,step+1,3,round(p["y"]))
-        CC(ws2,step+1,4,ci,COLORS[ci]["name"])
-        D(ws2,step+1,5,dist); D(ws2,step+1,6,acum)
+        CC(ws2,step+1,4,ci,COLORS[ci]["name"]); D(ws2,step+1,5,dist); D(ws2,step+1,6,acum)
         prev = p
     t = len(route)+2
     ws2.cell(row=t,column=5,value="TOTAL").font = Font(bold=True,name="Arial")
@@ -260,7 +234,6 @@ def export_xlsx(points, route, path):
     for w, c in zip([5,12,12,16,14,14], range(1,7)):
         ws2.column_dimensions[openpyxl.utils.get_column_letter(c)].width = w
 
-    # Hoja 3: Grid visual 12x9
     ws3 = wb.create_sheet("Mapa Visual")
     ws3.merge_cells("A1:L1")
     tc = ws3["A1"]
@@ -293,11 +266,10 @@ def export_xlsx(points, route, path):
     for col in range(1, GW+1):
         ws3.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 9
 
-    wb.save(path)
-    return acum
+    wb.save(path); return acum
 
 # ════════════════════════════════════════════════════════════════
-#  GUI
+#  COLORES UI
 # ════════════════════════════════════════════════════════════════
 BG   = "#0F0F0F"
 CARD = "#1A1A1A"
@@ -308,30 +280,36 @@ GRN  = "#00FF88"
 AMB  = "#FFB800"
 RED  = "#FF4444"
 ORG  = "#FF6600"
+PRP  = "#BB86FC"
 
+# ════════════════════════════════════════════════════════════════
+#  APP
+# ════════════════════════════════════════════════════════════════
 class WROApp:
-
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("WRO 2026 — Control + Mapa")
         self.root.configure(bg=BG)
-        self.root.geometry("1150x660")
-        self.root.minsize(900, 580)
+        self.root.geometry("1200x700")
+        self.root.minsize(950, 600)
 
         self._pub  = BLEPublisher()
-        self._dr   = DeadReckoning()   # posición estimada por la PC
+        self._dr   = DeadReckoning()
         self._points: list[dict] = []
         self._route:  list[dict] = []
         self._trail   = deque(maxlen=1000)
         self._lock    = threading.Lock()
 
-        # Control
+        # Drive
         self._keys    = set()
         self._btn     = None
-        self._last_cmd = (0, 0)
+        self._last_cmd = (0, 0, 0, 0)
         self.spd      = tk.IntVar(value=300)
 
-        # Color recibido del hub
+        # Motor extra activo
+        self._motor_held = 0   # 0=none 1=garra_principal 2=agarrar 3=expandir
+        self._motor_dir  = 0   # +1 o -1
+
         self._last_color = 0
 
         self._build()
@@ -341,7 +319,7 @@ class WROApp:
 
     # ─────────────────────────────────────────────────────────────────────────
     def _build(self):
-        # Toolbar
+        # ── Toolbar ──────────────────────────────────────────────────────────
         tb = tk.Frame(self.root, bg="#111")
         tb.pack(fill="x")
         tk.Label(tb, text="WRO 2026 — Mosaic Masters",
@@ -354,7 +332,7 @@ class WROApp:
         self.color_lbl.pack(side="right", padx=12)
         tk.Frame(self.root, bg="#252525", height=1).pack(fill="x")
 
-        # Body
+        # ── Body ─────────────────────────────────────────────────────────────
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True)
 
@@ -362,11 +340,11 @@ class WROApp:
         mf = tk.Frame(body, bg=BG)
         mf.pack(side="left", fill="both", expand=True, padx=10, pady=10)
 
-        map_header = tk.Frame(mf, bg=BG)
-        map_header.pack(fill="x", pady=(0,4))
-        tk.Label(map_header, text="MAPA EN VIVO", bg=BG, fg=DIM,
+        mhdr = tk.Frame(mf, bg=BG)
+        mhdr.pack(fill="x", pady=(0,4))
+        tk.Label(mhdr, text="MAPA EN VIVO", bg=BG, fg=DIM,
                  font=("Helvetica",8,"bold")).pack(side="left")
-        self.pos_lbl = tk.Label(map_header, text="X=0  Y=0  Hdg=0°",
+        self.pos_lbl = tk.Label(mhdr, text="X=0  Y=0  Hdg=0°",
                                 bg=BG, fg=CYAN, font=("Courier",9))
         self.pos_lbl.pack(side="right")
 
@@ -377,69 +355,117 @@ class WROApp:
         self.cv.bind("<Button-1>",   self._click_set_pos)
         self.cv.bind("<Button-3>",   self._click_add_point)
 
-        tk.Label(mf,
-                 text="Click izq = mover robot aquí (corrige posición)   |   Click der = añadir punto de color manualmente",
+        tk.Label(mf, text="Click izq = reubicar robot   |   Click der = añadir punto manual",
                  bg=BG, fg=DIM, font=("Helvetica",7)).pack(anchor="w")
 
-        # ── PANEL ─────────────────────────────────────────────────────────────
-        pf = tk.Frame(body, bg=BG, width=265)
+        # ── PANEL DERECHO ─────────────────────────────────────────────────────
+        pf = tk.Frame(body, bg=BG, width=280)
         pf.pack(side="right", fill="y", padx=(0,10), pady=10)
         pf.pack_propagate(False)
 
-        # Scroll interno
         c2 = tk.Canvas(pf, bg=BG, highlightthickness=0)
         sb = tk.Scrollbar(pf, orient="vertical", command=c2.yview)
         c2.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         c2.pack(side="left", fill="both", expand=True)
-        inn = tk.Frame(c2, bg=BG, width=250)
-        c2.create_window((0,0), window=inn, anchor="nw", width=250)
+        inn = tk.Frame(c2, bg=BG, width=260)
+        c2.create_window((0,0), window=inn, anchor="nw", width=260)
         inn.bind("<Configure>", lambda e: c2.configure(scrollregion=c2.bbox("all")))
 
-        def sep(): tk.Frame(inn, bg="#252525", height=1).pack(fill="x", pady=7)
-        def lbl(t): tk.Label(inn, text=t, bg=BG, fg=DIM,
-                             font=("Helvetica",8,"bold")).pack(anchor="w", pady=(0,4))
+        def sep():
+            tk.Frame(inn, bg="#252525", height=1).pack(fill="x", pady=7)
 
-        # ── D-PAD ──
-        lbl("CONTROL  (WASD / flechas)")
+        def lbl(t):
+            tk.Label(inn, text=t, bg=BG, fg=DIM,
+                     font=("Helvetica",8,"bold")).pack(anchor="w", pady=(0,4))
+
+        # ── D-PAD ─────────────────────────────────────────────────────────────
+        lbl("CONTROL RUEDAS  (WASD / flechas)")
         pad = tk.Frame(inn, bg=BG); pad.pack()
         bkw = dict(width=4,height=2,relief="flat",cursor="hand2",
                    font=("Helvetica",20),bg=CARD,fg=TEXT,
                    activebackground="#1E3A4A",activeforeground=CYAN)
 
         tk.Label(pad,bg=BG,width=4,height=2).grid(row=0,column=0,padx=3,pady=2)
-        self.b_fwd=tk.Button(pad,text="▲",**bkw); self.b_fwd.grid(row=0,column=1,padx=3,pady=2)
+        self.b_fwd=tk.Button(pad,text="▲",**bkw)
+        self.b_fwd.grid(row=0,column=1,padx=3,pady=2)
         tk.Label(pad,bg=BG,width=4,height=2).grid(row=0,column=2,padx=3,pady=2)
 
-        self.b_left=tk.Button(pad,text="◀",**bkw); self.b_left.grid(row=1,column=0,padx=3,pady=2)
-        self.b_stop=tk.Button(pad,text="⏹",width=4,height=2,relief="flat",cursor="hand2",
-                              font=("Helvetica",20),bg="#1E1E1E",fg=RED,
+        self.b_left=tk.Button(pad,text="◀",**bkw)
+        self.b_left.grid(row=1,column=0,padx=3,pady=2)
+        self.b_stop=tk.Button(pad,text="⏹",width=4,height=2,relief="flat",
+                              cursor="hand2",font=("Helvetica",20),
+                              bg="#1E1E1E",fg=RED,
                               activebackground="#2A2A2A",activeforeground=RED)
         self.b_stop.grid(row=1,column=1,padx=3,pady=2)
-        self.b_right=tk.Button(pad,text="▶",**bkw); self.b_right.grid(row=1,column=2,padx=3,pady=2)
+        self.b_right=tk.Button(pad,text="▶",**bkw)
+        self.b_right.grid(row=1,column=2,padx=3,pady=2)
 
         tk.Label(pad,bg=BG,width=4,height=2).grid(row=2,column=0,padx=3,pady=2)
-        self.b_back=tk.Button(pad,text="▼",**bkw); self.b_back.grid(row=2,column=1,padx=3,pady=2)
+        self.b_back=tk.Button(pad,text="▼",**bkw)
+        self.b_back.grid(row=2,column=1,padx=3,pady=2)
         tk.Label(pad,bg=BG,width=4,height=2).grid(row=2,column=2,padx=3,pady=2)
 
-        for btn,act in [(self.b_fwd,"fwd"),(self.b_back,"back"),
-                        (self.b_left,"left"),(self.b_right,"right")]:
+        for btn, act in [(self.b_fwd,"fwd"),(self.b_back,"back"),
+                         (self.b_left,"left"),(self.b_right,"right")]:
             btn.bind("<ButtonPress-1>",   lambda e,a=act: self._bp(a))
             btn.bind("<ButtonRelease-1>", lambda e: self._br())
         self.b_stop.bind("<ButtonPress-1>", lambda e: self._estop())
 
+        # Velocidad ruedas
         sf = tk.Frame(inn,bg=BG); sf.pack(fill="x",pady=4)
-        tk.Label(sf,text="Vel:",bg=BG,fg=DIM,font=("Helvetica",9)).pack(side="left")
+        tk.Label(sf,text="Vel ruedas:",bg=BG,fg=DIM,font=("Helvetica",9)).pack(side="left")
         tk.Scale(sf,variable=self.spd,from_=50,to=600,orient="horizontal",
                  bg=BG,fg=TEXT,troughcolor="#2A2A2A",highlightthickness=0,
-                 sliderrelief="flat",activebackground=CYAN,length=160).pack(side="right")
+                 sliderrelief="flat",activebackground=CYAN,length=145).pack(side="right")
 
-        self.cmd_lbl=tk.Label(inn,text="spd=0  trn=0",bg=BG,fg=DIM,font=("Courier",8))
+        self.cmd_lbl = tk.Label(inn,text="spd=0  trn=0",bg=BG,fg=DIM,font=("Courier",8))
         self.cmd_lbl.pack()
 
         sep()
 
-        # ── POSICIÓN ──
+        # ── MOTORES EXTRA ─────────────────────────────────────────────────────
+        lbl("MOTORES EXTRA  (mantén presionado)")
+
+        motor_cfg = [
+            (1, "Garra Principal",  "A", PRP),
+            (2, "Agarrar Bloques",  "E", "#FF9500"),
+            (3, "Expandir Garra",   "C", "#00E5CC"),
+        ]
+
+        for motor_id, name, port, color in motor_cfg:
+            mrow = tk.Frame(inn, bg=BG); mrow.pack(fill="x", pady=3)
+            tk.Label(mrow, text=f"{name} ({port})", bg=BG, fg=TEXT,
+                     font=("Helvetica",9)).pack(side="left")
+
+            btn_frame = tk.Frame(mrow, bg=BG)
+            btn_frame.pack(side="right")
+
+            mkw = dict(width=3, height=1, relief="flat", cursor="hand2",
+                       font=("Helvetica",12), bg=CARD, fg=color,
+                       activebackground="#2A2A2A", activeforeground=color)
+
+            b_minus = tk.Button(btn_frame, text="−", **mkw)
+            b_minus.pack(side="left", padx=2)
+            b_plus  = tk.Button(btn_frame, text="+", **mkw)
+            b_plus.pack(side="left", padx=2)
+
+            b_minus.bind("<ButtonPress-1>",
+                         lambda e, mid=motor_id: self._motor_press(mid, -1))
+            b_minus.bind("<ButtonRelease-1>",
+                         lambda e: self._motor_release())
+            b_plus.bind("<ButtonPress-1>",
+                        lambda e, mid=motor_id: self._motor_press(mid, +1))
+            b_plus.bind("<ButtonRelease-1>",
+                        lambda e: self._motor_release())
+
+        self.motor_lbl = tk.Label(inn, text="Motor: —", bg=BG, fg=DIM,
+                                  font=("Courier",8))
+        self.motor_lbl.pack(pady=(4,0))
+
+        sep()
+
+        # ── POSICIÓN ──────────────────────────────────────────────────────────
         lbl("POSICIÓN ESTIMADA")
         pos_card = tk.Frame(inn,bg=CARD); pos_card.pack(fill="x",pady=(0,4))
         self.pos_card_lbl = tk.Label(pos_card,
@@ -453,12 +479,12 @@ class WROApp:
 
         sep()
 
-        # ── STATS ──
+        # ── STATS ─────────────────────────────────────────────────────────────
         lbl("DETECCIONES")
         self._sl={}
         sf2=tk.Frame(inn,bg=CARD); sf2.pack(fill="x",pady=(0,4))
         for key,label,col in [
-            ("pts","Total puntos",CYAN),
+            ("pts","Total",CYAN),
             ("yel","Amarillo","#FFD700"),("blu","Azul","#1E90FF"),
             ("grn","Verde","#32CD32"),("wht","Blanco","#CCCCCC"),
             ("red","Rojo","#FF4444"),
@@ -470,39 +496,43 @@ class WROApp:
 
         sep()
 
-        # ── ACCIONES ──
-        lbl("ACCIONES")
-        bm=dict(relief="flat",cursor="hand2",font=("Helvetica",10),pady=7)
+        # ── ACCIONES ─────────────────────────────────────────────────────────
+        lbl("ACCIONES MAPA")
+        bm = dict(relief="flat",cursor="hand2",font=("Helvetica",10),pady=7)
         tk.Button(inn,text="⟳  Limpiar mapa",bg=CARD,fg=TEXT,
                   activebackground="#2A2A2A",**bm,command=self._clear).pack(fill="x",pady=2)
         tk.Button(inn,text="📍  Calcular ruta óptima",bg="#0F3460",fg=CYAN,
                   activebackground="#1A4A80",**bm,command=self._route_btn).pack(fill="x",pady=2)
         self.route_lbl=tk.Label(inn,text="",bg=BG,fg=GRN,
-                                font=("Helvetica",8),wraplength=240)
+                                font=("Helvetica",8),wraplength=250)
         self.route_lbl.pack(pady=(0,4))
         tk.Button(inn,text="💾  Exportar XLSX",bg="#1A3A1A",fg=GRN,
                   activebackground="#2A4A2A",**bm,command=self._export).pack(fill="x",pady=2)
 
         sep()
 
-        # ── LEYENDA ──
-        lbl("LEYENDA")
+        # ── LEYENDA ───────────────────────────────────────────────────────────
+        lbl("LEYENDA COLORES")
         for ci,info in COLORS.items():
             if ci==0: continue
             row=tk.Frame(inn,bg=BG); row.pack(fill="x",pady=1)
             dot=tk.Canvas(row,bg=BG,width=14,height=14,highlightthickness=0)
             dot.pack(side="left")
             dot.create_oval(2,2,12,12,fill=info["tk"],outline="")
-            tk.Label(row,text=info["name"],bg=BG,fg=TEXT,font=("Helvetica",9)).pack(side="left",padx=4)
+            tk.Label(row,text=info["name"],bg=BG,fg=TEXT,
+                     font=("Helvetica",9)).pack(side="left",padx=4)
 
     # ─────────────────────────────────────────────────────────────────────────
-    #  TECLADO Y BOTONES
+    #  TECLADO
     # ─────────────────────────────────────────────────────────────────────────
     def _bind_keys(self):
         self.root.bind("<KeyPress>",   lambda e: self._keys.add(e.keysym.lower()))
         self.root.bind("<KeyRelease>", lambda e: self._keys.discard(e.keysym.lower()))
         self.root.focus_set()
 
+    # ─────────────────────────────────────────────────────────────────────────
+    #  BOTONES D-PAD
+    # ─────────────────────────────────────────────────────────────────────────
     def _bp(self, a):
         self._btn = a
         m={"fwd":self.b_fwd,"back":self.b_back,"left":self.b_left,"right":self.b_right}
@@ -516,26 +546,45 @@ class WROApp:
         self._btn=None
 
     def _estop(self):
-        self._btn=None; self._keys.clear(); self._send(0,0)
+        self._btn=None; self._keys.clear()
+        self._motor_held=0; self._motor_dir=0
+        self._send(0,0,0,0)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  BOTONES MOTORES EXTRA
+    # ─────────────────────────────────────────────────────────────────────────
+    def _motor_press(self, motor_id: int, direction: int):
+        self._motor_held = motor_id
+        self._motor_dir  = direction
+        names = {1:"Garra Principal",2:"Agarrar Bloques",3:"Expandir Garra"}
+        sign  = "+" if direction > 0 else "−"
+        self.motor_lbl.config(
+            text=f"Motor: {names.get(motor_id,'?')} {sign}{MOTOR_SPD}°/s",
+            fg=PRP)
+
+    def _motor_release(self):
+        self._motor_held = 0
+        self._motor_dir  = 0
+        self.motor_lbl.config(text="Motor: —", fg=DIM)
 
     # ─────────────────────────────────────────────────────────────────────────
     #  LOOP DE CONTROL + DEAD RECKONING (100ms)
     # ─────────────────────────────────────────────────────────────────────────
     def _cmd_loop(self):
-        spd, trn = self._compute()
+        spd, trn = self._compute_drive()
+        mc  = self._motor_held
+        mv  = MOTOR_SPD * self._motor_dir if mc != 0 else 0
 
-        # Actualizar dead reckoning con el comando actual
+        cmd = (spd, trn, mc, mv)
+        if cmd != self._last_cmd:
+            self._send(*cmd)
+            self._last_cmd = cmd
+
+        # Dead reckoning
         self._dr.update(spd, trn)
-
-        # Enviar al hub solo si cambió el comando
-        if (spd, trn) != self._last_cmd:
-            self._send(spd, trn)
-            self._last_cmd = (spd, trn)
-
-        # Trail continuo
         self._trail.append(self._dr.pos)
 
-        # Registrar punto si hay color relevante y el robot se está moviendo
+        # Registrar punto de color si el robot se mueve
         if self._last_color != 0 and (spd != 0 or trn != 0):
             x, y = self._dr.pos
             with self._lock:
@@ -543,14 +592,14 @@ class WROApp:
                     math.hypot(p["x"]-x, p["y"]-y) < 30 and p["c"] == self._last_color
                     for p in self._points)
                 if not dup:
-                    self._points.append({"x": x, "y": y, "c": self._last_color})
+                    self._points.append({"x":x,"y":y,"c":self._last_color})
+            self._update_stats()
 
-        # Actualizar UI
         self._update_pos_labels()
         self._redraw()
         self.root.after(100, self._cmd_loop)
 
-    def _compute(self):
+    def _compute_drive(self):
         s=self.spd.get(); k=self._keys; b=self._btn
         fwd  ="w" in k or "up"    in k or b=="fwd"
         back ="s" in k or "down"  in k or b=="back"
@@ -560,23 +609,23 @@ class WROApp:
         trn = TURN_RATE if right else (-TURN_RATE if left else 0)
         return spd, trn
 
-    def _send(self, spd, trn):
-        self._pub.send(spd, trn)   # no-block, el hilo BLE lo toma en <50ms
-        moving = spd!=0 or trn!=0
+    def _send(self, spd, trn, mc=0, mv=0):
+        self._pub.send(spd, trn, mc, mv)
+        moving = spd!=0 or trn!=0 or mc!=0
         self.ble_lbl.config(
-            text=f"● {'Moviendo' if moving else 'Conectado ✓'}",
+            text=f"● {'Activo' if moving else 'Conectado ✓'}",
             fg=GRN if moving else CYAN)
         self.cmd_lbl.config(text=f"spd={spd:+4d}  trn={trn:+4d}")
 
     def _update_pos_labels(self):
         x,y = self._dr.pos
-        h   = round(self._dr.heading, 1)
-        txt = f"X={round(x)} mm\nY={round(y)} mm\nHeading={h}°"
-        self.pos_card_lbl.config(text=txt)
+        h   = round(self._dr.heading,1)
+        self.pos_card_lbl.config(
+            text=f"X={round(x)} mm\nY={round(y)} mm\nHeading={h}°")
         self.pos_lbl.config(text=f"X={round(x)}  Y={round(y)}  Hdg={h}°")
 
     # ─────────────────────────────────────────────────────────────────────────
-    #  BLE RX  (solo recibe color del hub)
+    #  BLE RX
     # ─────────────────────────────────────────────────────────────────────────
     def _start_ble_rx(self):
         threading.Thread(target=lambda: asyncio.run(self._scan()), daemon=True).start()
@@ -590,7 +639,6 @@ class WROApp:
             self._last_color = c
             info = COLORS.get(c, COLORS[0])
             self.root.after(0, self._update_color_label, c, info)
-            self._update_stats()
 
         try:
             sc = BleakScanner(detection_callback=on_adv, scanning_mode="passive")
@@ -601,8 +649,9 @@ class WROApp:
                 await asyncio.sleep(1)
 
     def _update_color_label(self, c, info):
-        self.color_lbl.config(text=f"Color: {info['name']}",
-                              fg=info["tk"] if c != 0 else DIM)
+        self.color_lbl.config(
+            text=f"Color: {info['name']}",
+            fg=info["tk"] if c!=0 else DIM)
 
     def _update_stats(self):
         with self._lock: pts=list(self._points)
@@ -618,61 +667,89 @@ class WROApp:
     #  CANVAS
     # ─────────────────────────────────────────────────────────────────────────
     def _px(self, x_mm, y_mm):
-        w=self.cv.winfo_width() or 600
-        h=self.cv.winfo_height() or 450
-        # Clamp para que no salga del canvas
-        px = int(max(0, min(w, x_mm/FIELD_W*w)))
-        py = int(max(0, min(h, (1-y_mm/FIELD_H)*h)))
-        return px, py
+        w = self.cv.winfo_width()  or 600
+        h = self.cv.winfo_height() or 450
+        return int(x_mm/FIELD_W*w), int((1-y_mm/FIELD_H)*h)
 
     def _px_to_mm(self, px, py):
-        w=self.cv.winfo_width() or 600
-        h=self.cv.winfo_height() or 450
+        w = self.cv.winfo_width()  or 600
+        h = self.cv.winfo_height() or 450
         return px/w*FIELD_W, (1-py/h)*FIELD_H
 
+    def _draw_robot(self, cv, rx, ry, heading_deg):
+        """
+        Dibuja el robot como un triángulo que apunta en la dirección
+        real del heading. heading=0 → apunta arriba (+Y en el mapa).
+        """
+        size = 12
+        # heading=0 → apunta en +Y (arriba en pantalla = ángulo -90° en canvas)
+        # Convertimos: ángulo_canvas = -(heading - 90) para que 0° = arriba
+        angle = math.radians(heading_deg)   # mismo sistema que dead reckoning
+
+        # Punta del triángulo (frente del robot)
+        tip_x = rx + size * math.sin(angle)
+        tip_y = ry - size * math.cos(angle)
+
+        # Esquinas traseras
+        back_angle_l = angle + math.radians(140)
+        back_angle_r = angle - math.radians(140)
+        bl_x = rx + size * 0.7 * math.sin(back_angle_l)
+        bl_y = ry - size * 0.7 * math.cos(back_angle_l)
+        br_x = rx + size * 0.7 * math.sin(back_angle_r)
+        br_y = ry - size * 0.7 * math.cos(back_angle_r)
+
+        cv.create_polygon(
+            tip_x, tip_y,
+            bl_x,  bl_y,
+            br_x,  br_y,
+            fill=AMB, outline="#FFFFFF", width=2)
+
+        # Punto central
+        cv.create_oval(rx-3,ry-3,rx+3,ry+3, fill="#FFFFFF", outline="")
+
     def _redraw(self):
-        cv=self.cv; cv.delete("all")
-        w=cv.winfo_width() or 600
-        h=cv.winfo_height() or 450
+        cv = self.cv; cv.delete("all")
+        w = cv.winfo_width() or 600
+        h = cv.winfo_height() or 450
 
         # Grid
-        for gx in range(0,int(FIELD_W)+1,100):
-            px=int(gx/FIELD_W*w)
-            cv.create_line(px,0,px,h,fill="#1C1C1C")
-            if gx>0:
+        for gx in range(0, int(FIELD_W)+1, 100):
+            px = int(gx/FIELD_W*w)
+            cv.create_line(px,0,px,h, fill="#1C1C1C")
+            if gx > 0:
                 cv.create_text(px+2,h-2,anchor="se",
                                text=f"{gx//10}",fill="#2A2A2A",font=("Helvetica",6))
-        for gy in range(0,int(FIELD_H)+1,100):
-            py=int((1-gy/FIELD_H)*h)
-            cv.create_line(0,py,w,py,fill="#1C1C1C")
-            if gy>0:
-                cv.create_text(2,py-2,anchor="sw",
+        for gy in range(0, int(FIELD_H)+1, 100):
+            py = int((1-gy/FIELD_H)*h)
+            cv.create_line(0,py,w,py, fill="#1C1C1C")
+            if gy > 0:
+                cv.create_text(3,py-2,anchor="sw",
                                text=f"{gy//10}",fill="#2A2A2A",font=("Helvetica",6))
-        cv.create_rectangle(1,1,w-1,h-1,outline="#444",width=2)
+        cv.create_rectangle(1,1,w-1,h-1, outline="#444", width=2)
 
         # Origen (0,0)
-        ox,oy=self._px(0,0)
-        cv.create_line(ox-10,oy,ox+10,oy,fill=ORG,width=2)
-        cv.create_line(ox,oy-10,ox,oy+10,fill=ORG,width=2)
-        cv.create_text(ox+12,oy-8,text="(0,0)",fill=ORG,font=("Helvetica",7,"bold"))
+        ox,oy = self._px(0,0)
+        cv.create_line(ox-12,oy,ox+12,oy, fill=ORG, width=2)
+        cv.create_line(ox,oy-12,ox,oy+12, fill=ORG, width=2)
+        cv.create_text(ox+14,oy-8, text="(0,0)", fill=ORG, font=("Helvetica",7,"bold"))
 
         # Trail
-        trail=list(self._trail)
-        for i in range(1,len(trail)):
+        trail = list(self._trail)
+        for i in range(1, len(trail)):
             x1,y1=self._px(*trail[i-1]); x2,y2=self._px(*trail[i])
-            cv.create_line(x1,y1,x2,y2,fill="#1E5555",width=1)
+            cv.create_line(x1,y1,x2,y2, fill="#1E5555", width=1)
 
         # Ruta óptima
         if self._route:
-            for i in range(1,len(self._route)):
+            for i in range(1, len(self._route)):
                 p1=self._route[i-1]; p2=self._route[i]
                 x1,y1=self._px(p1["x"],p1["y"]); x2,y2=self._px(p2["x"],p2["y"])
-                cv.create_line(x1,y1,x2,y2,fill=CYAN,width=2,dash=(5,3))
-            for step,p in enumerate(self._route,1):
+                cv.create_line(x1,y1,x2,y2, fill=CYAN, width=2, dash=(5,3))
+            for step, p in enumerate(self._route, 1):
                 px,py=self._px(p["x"],p["y"])
-                cv.create_oval(px-4,py-4,px+4,py+4,fill=CYAN,outline="")
-                cv.create_text(px+10,py-10,text=str(step),
-                               fill=CYAN,font=("Helvetica",7,"bold"))
+                cv.create_oval(px-4,py-4,px+4,py+4, fill=CYAN, outline="")
+                cv.create_text(px+10,py-10, text=str(step),
+                               fill=CYAN, font=("Helvetica",7,"bold"))
 
         # Puntos detectados
         with self._lock: pts=list(self._points)
@@ -681,24 +758,17 @@ class WROApp:
             px,py=self._px(p["x"],p["y"])
             cv.create_oval(px-r,py-r,px+r,py+r,
                            fill=COLORS[ci]["tk"],outline="#FFF",width=1)
-            cv.create_text(px,py,text=COLORS[ci]["name"][0],
-                           fill="black",font=("Helvetica",6,"bold"))
+            cv.create_text(px,py, text=COLORS[ci]["name"][0],
+                           fill="black", font=("Helvetica",6,"bold"))
 
-        # Robot
-        rx,ry=self._px(*self._dr.pos)
-        # Triángulo apuntando en la dirección del heading
-        angle=math.radians(self._dr.heading)
-        size=10
-        tip   =(rx+size*math.sin(angle),    ry-size*math.cos(angle))
-        left  =(rx+size*0.6*math.sin(angle+2.4), ry-size*0.6*math.cos(angle+2.4))
-        right =(rx+size*0.6*math.sin(angle-2.4), ry-size*0.6*math.cos(angle-2.4))
-        cv.create_polygon(*tip,*left,*right,fill=AMB,outline="#FFF",width=2)
+        # Robot con triángulo alineado al heading
+        rx, ry = self._px(*self._dr.pos)
+        self._draw_robot(cv, rx, ry, self._dr.heading)
 
     # ─────────────────────────────────────────────────────────────────────────
     #  CLICKS EN EL CANVAS
     # ─────────────────────────────────────────────────────────────────────────
     def _click_set_pos(self, event):
-        """Click izquierdo = mover el robot a esa posición (corrige drift)."""
         x_mm, y_mm = self._px_to_mm(event.x, event.y)
         x_mm = max(0, min(FIELD_W, x_mm))
         y_mm = max(0, min(FIELD_H, y_mm))
@@ -707,7 +777,6 @@ class WROApp:
         self._trail.append((x_mm, y_mm))
 
     def _click_add_point(self, event):
-        """Click derecho = agregar punto manualmente."""
         x_mm, y_mm = self._px_to_mm(event.x, event.y)
         popup = tk.Menu(self.root, tearoff=0, bg=CARD, fg=TEXT)
         for ci, info in COLORS.items():
@@ -731,8 +800,7 @@ class WROApp:
 
     def _clear(self):
         with self._lock: self._points.clear()
-        self._route.clear()
-        self._trail.clear()
+        self._route.clear(); self._trail.clear()
         self.route_lbl.config(text="")
         self._update_stats(); self._redraw()
 
