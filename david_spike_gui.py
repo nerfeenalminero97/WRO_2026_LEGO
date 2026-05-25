@@ -1,469 +1,255 @@
-import sys, json, csv, datetime, asyncio
-from collections import deque
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QPushButton, QLabel, QTextEdit, QGroupBox,
-    QSizePolicy, QSlider, QFileDialog
-)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer, QPointF
-from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QBrush, QPolygonF
-from bleak import BleakScanner, BleakClient
+"""
+spike_drive_gui.py  —  WRO 2026 SPIKE Prime Controller
+Controla el SPIKE Prime v5 vía BLE broadcast (Pybricks).
 
-# UUID del servicio serial de Pybricks (oficial)
-PYBRICKS_SERVICE_UUID = "c5f50001-8280-46da-89f4-6d8051e4aeef"
-PYBRICKS_TX_UUID      = "c5f50002-8280-46da-89f4-6d8051e4aeef"  # PC → Hub
-PYBRICKS_RX_UUID      = "c5f50003-8280-46da-89f4-6d8051e4aeef"  # Hub → PC
+Instala:
+    pip install winrt-Windows.Devices.Bluetooth.Advertisement
+    pip install winrt-Windows.Storage.Streams
 
+Flujo:
+    1. Sube spike_drive_receiver.py al hub con Pybricks Code.
+    2. Desconecta Pybricks Code.
+    3. Presiona el botón central del hub para arrancarlo.
+    4. Corre este script.
+"""
 
-# ═══════════════════════════════════════════════════════════════
-#  BLE Worker — vive en su propio QThread
-# ═══════════════════════════════════════════════════════════════
-class BLEWorker(QThread):
-    telemetry_received = pyqtSignal(dict)
-    log_message        = pyqtSignal(str)
-    connected_signal   = pyqtSignal(bool)
+import struct
+import threading
+import tkinter as tk
 
+# ── Protocolo Pybricks ───────────────────────────────────────────────────────
+PYBRICKS_MFR_ID = 0x0397
+CONTROL_CHANNEL = 1
+TYPE_INT = 3
+
+def _enc(value: int) -> bytes:
+    if -128 <= value <= 127:
+        return bytes([(TYPE_INT << 5) | 1]) + struct.pack("b", value)
+    elif -32768 <= value <= 32767:
+        return bytes([(TYPE_INT << 5) | 2]) + struct.pack("<h", value)
+    else:
+        return bytes([(TYPE_INT << 5) | 4]) + struct.pack("<i", value)
+
+def build_payload(speed: int, turn: int) -> bytes:
+    return bytes([CONTROL_CHANNEL]) + _enc(speed) + _enc(turn)
+
+TURN_RATE = 200   # deg/s
+
+# ── BLE Advertiser ───────────────────────────────────────────────────────────
+class BLEAdvertiser:
     def __init__(self):
-        super().__init__()
-        self._running   = True
-        self._cmd_queue = deque()
-        self._client    = None
+        self._publisher = None
+        self._lock = threading.Lock()
 
-    def send_cmd(self, cmd_dict):
-        """Llamado desde el hilo GUI — solo encola, nunca bloquea."""
-        self._cmd_queue.append(json.dumps(cmd_dict) + "\n")
+    def _make_ibuffer(self, data: bytes):
+        """
+        Convierte bytes → IBuffer usando DataWriter de WinRT.
+        write_bytes() espera un array-like indexable, no una list.
+        """
+        from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
+        writer = DataWriter()
+        # El método correcto en python-winrt es write_bytes con un bytes object
+        for b in data:
+            writer.write_byte(b)          # write_byte(uint8) — uno por uno, seguro
+        return writer.detach_buffer()
+
+    def send(self, speed: int, turn: int):
+        try:
+            from winrt.windows.devices.bluetooth.advertisement import (
+                BluetoothLEAdvertisementPublisher,
+                BluetoothLEAdvertisement,
+                BluetoothLEManufacturerData,
+            )
+
+            payload = build_payload(speed, turn)
+
+            mfr = BluetoothLEManufacturerData()
+            mfr.company_id = PYBRICKS_MFR_ID
+            mfr.data = self._make_ibuffer(payload)
+
+            adv = BluetoothLEAdvertisement()
+            adv.manufacturer_data.append(mfr)
+
+            new_pub = BluetoothLEAdvertisementPublisher(adv)
+
+            with self._lock:
+                if self._publisher is not None:
+                    try:
+                        self._publisher.stop()
+                    except Exception:
+                        pass
+                self._publisher = new_pub
+                new_pub.start()
+
+        except Exception as e:
+            print(f"[BLE] Error: {e}")
 
     def stop(self):
-        self._running = False
-
-    def run(self):
-        asyncio.run(self._ble_loop())
-
-    async def _ble_loop(self):
-        # ── Escanear y encontrar el SPIKE ────────────────────
-        self.log_message.emit("Buscando SPIKE por Bluetooth...")
-        try:
-            device = await BleakScanner.find_device_by_filter(
-                lambda d, _: PYBRICKS_SERVICE_UUID.lower() in
-                             [str(u).lower() for u in (d.metadata.get("uuids") or [])],
-                timeout=10.0
-            )
-        except Exception as e:
-            self.log_message.emit(f"Error al escanear: {e}")
-            self.connected_signal.emit(False)
-            return
-
-        if device is None:
-            self.log_message.emit("❌ No se encontró el SPIKE. Verifica que esté encendido y con el programa corriendo.")
-            self.connected_signal.emit(False)
-            return
-
-        self.log_message.emit(f"SPIKE encontrado: {device.name} ({device.address})")
-
-        buf = ""
-
-        def on_notify(_, data: bytearray):
-            nonlocal buf
-            buf += data.decode(errors="ignore")
-            while "\n" in buf:
-                line, buf = buf.split("\n", 1)
-                line = line.strip()
-                if line:
-                    try:
-                        self.telemetry_received.emit(json.loads(line))
-                    except json.JSONDecodeError:
-                        self.log_message.emit(f"JSON inválido: {line}")
-
-        # ── Conectar ─────────────────────────────────────────
-        try:
-            async with BleakClient(device) as client:
-                self._client = client
-                await client.start_notify(PYBRICKS_RX_UUID, on_notify)
-                self.log_message.emit("✅ Conectado por Bluetooth")
-                self.connected_signal.emit(True)
-
-                while self._running and client.is_connected:
-                    # Enviar comandos encolados
-                    while self._cmd_queue:
-                        line = self._cmd_queue.popleft()
-                        await client.write_gatt_char(
-                            PYBRICKS_TX_UUID,
-                            line.encode(),
-                            response=False
-                        )
-                    await asyncio.sleep(0.05)
-
-                await client.stop_notify(PYBRICKS_RX_UUID)
-        except Exception as e:
-            self.log_message.emit(f"Error de conexión: {e}")
-
-        self._client = None
-        self.connected_signal.emit(False)
-        self.log_message.emit("Bluetooth desconectado.")
+        with self._lock:
+            if self._publisher:
+                try:
+                    self._publisher.stop()
+                except Exception:
+                    pass
+                self._publisher = None
 
 
-# ═══════════════════════════════════════════════════════════════
-#  Map widget
-# ═══════════════════════════════════════════════════════════════
-class MapWidget(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setMinimumSize(300, 300)
-        self.path        = [QPointF(0, 0)]
-        self.heading     = 0.0
-        self.scale       = 1.0
-        self.last_color1 = "NONE"
-        self.last_color2 = "NONE"
-        self._COLORS = {
-            "BLACK":  QColor("#222222"),
-            "WHITE":  QColor("#eeeeee"),
-            "RED":    QColor("#e24b4a"),
-            "GREEN":  QColor("#639922"),
-            "BLUE":   QColor("#378add"),
-            "YELLOW": QColor("#ef9f27"),
-            "NONE":   QColor("#888888"),
-        }
+# ── GUI ───────────────────────────────────────────────────────────────────────
+BG    = "#0F0F0F"
+CARD  = "#1A1A1A"
+TEXT  = "#FFFFFF"
+MUTED = "#555555"
+CYAN  = "#00D4FF"
+GREEN = "#00FF88"
+RED   = "#FF4444"
+AMBER = "#FFB800"
 
-    def update_position(self, x, y, heading, c1, c2):
-        self.path.append(QPointF(x, y))
-        if len(self.path) > 2000:
-            self.path = self.path[-2000:]
-        self.heading     = heading
-        self.last_color1 = c1
-        self.last_color2 = c2
-        self.update()
+class DriveApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("SPIKE Prime — WRO 2026")
+        self.root.configure(bg=BG)
+        self.root.resizable(False, False)
 
-    def reset(self):
-        self.path    = [QPointF(0, 0)]
-        self.heading = 0.0
-        self.update()
+        self._ble       = BLEAdvertiser()
+        self._keys      = set()
+        self._btn       = None
+        self._last      = (None, None)
+        self.speed_var  = tk.IntVar(value=300)
 
-    def paintEvent(self, _):
-        p  = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        w, h   = self.width(), self.height()
-        cx, cy = w / 2, h / 2
+        self._build()
+        self._bind_keys()
+        self._loop()
 
-        p.fillRect(0, 0, w, h, QColor("#1a1a2e"))
+    def _build(self):
+        P = 20
 
-        p.setPen(QPen(QColor("#2a2a4a"), 1))
-        step = 50
-        for gx in range(int(cx % step), w, step):
-            p.drawLine(gx, 0, gx, h)
-        for gy in range(int(cy % step), h, step):
-            p.drawLine(0, gy, w, gy)
+        # ── Header ──
+        h = tk.Frame(self.root, bg=BG)
+        h.pack(fill="x", padx=P, pady=(P, 0))
+        tk.Label(h, text="SPIKE Prime v5", bg=BG, fg=TEXT,
+                 font=("Helvetica", 15, "bold")).pack(side="left")
+        self.status = tk.Label(h, text="● Listo", bg=BG, fg=GREEN,
+                               font=("Helvetica", 10))
+        self.status.pack(side="right")
 
-        p.setPen(QPen(QColor("#444488"), 2))
-        p.drawLine(0, int(cy), w, int(cy))
-        p.drawLine(int(cx), 0, int(cx), h)
+        tk.Frame(self.root, bg="#252525", height=1).pack(fill="x", padx=P, pady=10)
 
-        p.setPen(QColor("#aaaacc"))
-        p.setFont(QFont("monospace", 9))
-        p.drawText(int(cx) + 4, int(cy) - 4, "(0,0)")
+        # ── D-pad ──
+        pad = tk.Frame(self.root, bg=BG)
+        pad.pack(padx=P, pady=(0, P))
 
-        if len(self.path) > 1:
-            p.setPen(QPen(QColor("#5dcaa5"), 2))
-            for i in range(1, len(self.path)):
-                x1 = cx + self.path[i-1].x() * self.scale
-                y1 = cy - self.path[i-1].y() * self.scale
-                x2 = cx + self.path[i].x()   * self.scale
-                y2 = cy - self.path[i].y()    * self.scale
-                p.drawLine(int(x1), int(y1), int(x2), int(y2))
+        bkw = dict(width=5, height=2, relief="flat", cursor="hand2",
+                   font=("Helvetica", 22), bg=CARD, fg=TEXT,
+                   activebackground="#1E3A4A", activeforeground=CYAN)
 
-        if self.path:
-            rx = cx + self.path[-1].x() * self.scale
-            ry = cy - self.path[-1].y() * self.scale
-            p.save()
-            p.translate(rx, ry)
-            p.rotate(self.heading)
-            p.setBrush(QBrush(QColor("#7f77dd")))
-            p.setPen(Qt.NoPen)
-            triangle = QPolygonF([
-                QPointF(0, -12), QPointF(-7, 8), QPointF(7, 8)
-            ])
-            p.drawPolygon(triangle)
-            p.restore()
+        tk.Label(pad, bg=BG, width=5, height=2).grid(row=0, column=0, padx=4, pady=4)
+        self.b_fwd   = tk.Button(pad, text="▲", **bkw)
+        self.b_fwd.grid(row=0, column=1, padx=4, pady=4)
+        tk.Label(pad, bg=BG, width=5, height=2).grid(row=0, column=2, padx=4, pady=4)
 
-        p.setBrush(QBrush(self._COLORS.get(self.last_color1, QColor("#888"))))
-        p.setPen(QPen(QColor("#555"), 1))
-        p.drawEllipse(10, h - 30, 18, 18)
-        p.setBrush(QBrush(self._COLORS.get(self.last_color2, QColor("#888"))))
-        p.drawEllipse(34, h - 30, 18, 18)
-        p.setPen(QColor("#aaaacc"))
-        p.setFont(QFont("monospace", 8))
-        p.drawText(10, h - 35, "CS-E  CS-A")
-        p.end()
+        self.b_left  = tk.Button(pad, text="◀", **bkw)
+        self.b_left.grid(row=1, column=0, padx=4, pady=4)
+        self.b_stop  = tk.Button(pad, text="⏹", width=5, height=2,
+                                 relief="flat", cursor="hand2",
+                                 font=("Helvetica", 22), bg="#1E1E1E",
+                                 fg=RED, activebackground="#2A2A2A",
+                                 activeforeground=RED)
+        self.b_stop.grid(row=1, column=1, padx=4, pady=4)
+        self.b_right = tk.Button(pad, text="▶", **bkw)
+        self.b_right.grid(row=1, column=2, padx=4, pady=4)
+
+        tk.Label(pad, bg=BG, width=5, height=2).grid(row=2, column=0, padx=4, pady=4)
+        self.b_back  = tk.Button(pad, text="▼", **bkw)
+        self.b_back.grid(row=2, column=1, padx=4, pady=4)
+        tk.Label(pad, bg=BG, width=5, height=2).grid(row=2, column=2, padx=4, pady=4)
+
+        for btn, act in [(self.b_fwd,"fwd"),(self.b_back,"back"),
+                         (self.b_left,"left"),(self.b_right,"right")]:
+            btn.bind("<ButtonPress-1>",   lambda e, a=act: self._press(a))
+            btn.bind("<ButtonRelease-1>", lambda e: self._release())
+        self.b_stop.bind("<ButtonPress-1>", lambda e: self._estop())
+
+        # ── Velocidad ──
+        tk.Frame(self.root, bg="#252525", height=1).pack(fill="x", padx=P)
+        sf = tk.Frame(self.root, bg=BG)
+        sf.pack(fill="x", padx=P, pady=10)
+        tk.Label(sf, text="Velocidad", bg=BG, fg=MUTED,
+                 font=("Helvetica", 9)).pack(side="left")
+        tk.Scale(sf, variable=self.speed_var, from_=50, to=600,
+                 orient="horizontal", bg=BG, fg=TEXT, troughcolor="#2A2A2A",
+                 highlightthickness=0, sliderrelief="flat",
+                 activebackground=CYAN, length=210).pack(side="right")
+
+        self.cmd_lbl = tk.Label(self.root, text="speed=0  turn=0",
+                                bg=BG, fg=MUTED, font=("Courier", 9))
+        self.cmd_lbl.pack(pady=(0, 6))
+        tk.Label(self.root, text="Teclado: W A S D  /  ↑ ← ↓ →",
+                 bg=BG, fg="#333", font=("Helvetica", 8)).pack(pady=(0, P))
+
+    # ── Botones ───────────────────────────────────────────────────────────────
+    def _press(self, action):
+        self._btn = action
+        self._hi(action, True)
+
+    def _release(self):
+        if self._btn:
+            self._hi(self._btn, False)
+        self._btn = None
+
+    def _hi(self, action, on):
+        m = {"fwd": self.b_fwd, "back": self.b_back,
+             "left": self.b_left, "right": self.b_right}
+        b = m.get(action)
+        if b:
+            b.config(bg="#1E3A4A" if on else CARD, fg=CYAN if on else TEXT)
+
+    def _estop(self):
+        self._btn = None
+        self._keys.clear()
+        self._do_send(0, 0)
+
+    # ── Teclado ───────────────────────────────────────────────────────────────
+    def _bind_keys(self):
+        self.root.bind("<KeyPress>",   lambda e: self._keys.add(e.keysym.lower()))
+        self.root.bind("<KeyRelease>", lambda e: self._keys.discard(e.keysym.lower()))
+        self.root.focus_set()
+
+    # ── Loop de control (100 ms = misma frecuencia que hub.ble.observe) ───────
+    def _loop(self):
+        speed, turn = self._compute()
+        if (speed, turn) != self._last:
+            self._do_send(speed, turn)
+            self._last = (speed, turn)
+        self.root.after(100, self._loop)
+
+    def _compute(self):
+        s = self.speed_var.get()
+        k, b = self._keys, self._btn
+        fwd   = "w" in k or "up"    in k or b == "fwd"
+        back  = "s" in k or "down"  in k or b == "back"
+        left  = "a" in k or "left"  in k or b == "left"
+        right = "d" in k or "right" in k or b == "right"
+        speed = s if fwd else (-s if back else 0)
+        turn  = TURN_RATE if right else (-TURN_RATE if left else 0)
+        return speed, turn
+
+    def _do_send(self, speed: int, turn: int):
+        threading.Thread(target=self._ble.send, args=(speed, turn), daemon=True).start()
+        moving = speed != 0 or turn != 0
+        self.status.config(
+            text=f"● {'Moviendo' if moving else 'Detenido'}",
+            fg=GREEN if moving else AMBER)
+        self.cmd_lbl.config(text=f"speed={speed:+4d} mm/s  |  turn={turn:+4d} °/s")
 
 
-# ═══════════════════════════════════════════════════════════════
-#  Main window
-# ═══════════════════════════════════════════════════════════════
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("SPIKE Prime Controller")
-        self.resize(1100, 700)
-        self.worker   = None
-        self.log_rows = []
-        self._held    = set()
-        self._build_ui()
-        self._setup_keypress_timer()
-
-    def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setSpacing(12)
-
-        left = QVBoxLayout()
-        left.setSpacing(8)
-        root.addLayout(left, 0)
-
-        # Conexión
-        conn_box = QGroupBox("Conexión Bluetooth")
-        conn_lay = QVBoxLayout(conn_box)
-        self.btn_connect = QPushButton("🔵  Buscar y Conectar SPIKE")
-        self.btn_connect.setMinimumHeight(40)
-        self.btn_connect.clicked.connect(self._connect)
-        conn_lay.addWidget(self.btn_connect)
-        self.btn_disconnect = QPushButton("Desconectar")
-        self.btn_disconnect.setEnabled(False)
-        self.btn_disconnect.clicked.connect(self._disconnect)
-        conn_lay.addWidget(self.btn_disconnect)
-        left.addWidget(conn_box)
-
-        # Velocidad
-        spd_box = QGroupBox("Velocidad")
-        spd_lay = QVBoxLayout(spd_box)
-        self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(50, 600)
-        self.speed_slider.setValue(300)
-        self.speed_label  = QLabel("300 mm/s")
-        self.speed_label.setAlignment(Qt.AlignCenter)
-        self.speed_slider.valueChanged.connect(
-            lambda v: self.speed_label.setText(f"{v} mm/s"))
-        spd_lay.addWidget(self.speed_slider)
-        spd_lay.addWidget(self.speed_label)
-        left.addWidget(spd_box)
-
-        # Controles
-        ctrl_box = QGroupBox("Controles  (también puedes usar WASD o flechas)")
-        ctrl_lay = QGridLayout(ctrl_box)
-        self.btn_fwd  = QPushButton("▲\nForward")
-        self.btn_bwd  = QPushButton("▼\nBackward")
-        self.btn_lft  = QPushButton("◀\nLeft")
-        self.btn_rgt  = QPushButton("▶\nRight")
-        self.btn_stop = QPushButton("■\nStop")
-        self.btn_au   = QPushButton("Arm ▲")
-        self.btn_ad   = QPushButton("Arm ▼")
-        self.btn_rst  = QPushButton("Reset posición (0,0)")
-
-        for btn in [self.btn_fwd, self.btn_bwd, self.btn_lft,
-                    self.btn_rgt, self.btn_stop]:
-            btn.setMinimumSize(70, 60)
-
-        ctrl_lay.addWidget(self.btn_fwd,  0, 1)
-        ctrl_lay.addWidget(self.btn_lft,  1, 0)
-        ctrl_lay.addWidget(self.btn_stop, 1, 1)
-        ctrl_lay.addWidget(self.btn_rgt,  1, 2)
-        ctrl_lay.addWidget(self.btn_bwd,  2, 1)
-        ctrl_lay.addWidget(self.btn_au,   3, 0)
-        ctrl_lay.addWidget(self.btn_ad,   3, 2)
-        ctrl_lay.addWidget(self.btn_rst,  4, 0, 1, 3)
-
-        self.btn_fwd.pressed.connect(lambda: self._cmd("forward"))
-        self.btn_fwd.released.connect(lambda: self._cmd("stop"))
-        self.btn_bwd.pressed.connect(lambda: self._cmd("backward"))
-        self.btn_bwd.released.connect(lambda: self._cmd("stop"))
-        self.btn_lft.pressed.connect(lambda: self._cmd("left"))
-        self.btn_lft.released.connect(lambda: self._cmd("stop"))
-        self.btn_rgt.pressed.connect(lambda: self._cmd("right"))
-        self.btn_rgt.released.connect(lambda: self._cmd("stop"))
-        self.btn_stop.clicked.connect(lambda: self._cmd("stop"))
-        self.btn_au.clicked.connect(lambda: self._cmd("arm_up"))
-        self.btn_ad.clicked.connect(lambda: self._cmd("arm_down"))
-        self.btn_rst.clicked.connect(self._reset_position)
-        left.addWidget(ctrl_box)
-
-        self.btn_export = QPushButton("💾  Exportar log a CSV")
-        self.btn_export.clicked.connect(self._export_csv)
-        left.addWidget(self.btn_export)
-        left.addStretch()
-
-        # Columna derecha
-        right = QVBoxLayout()
-        root.addLayout(right, 1)
-
-        telem_row = QHBoxLayout()
-        self.lbl_x   = self._telem_card("X",         "0.0 mm")
-        self.lbl_y   = self._telem_card("Y",         "0.0 mm")
-        self.lbl_hdg = self._telem_card("Heading",   "0.0°")
-        self.lbl_bat = self._telem_card("Batería",   "—")
-        self.lbl_c1  = self._telem_card("Sensor E",  "—")
-        self.lbl_c2  = self._telem_card("Sensor A",  "—")
-        for card in [self.lbl_x, self.lbl_y, self.lbl_hdg,
-                     self.lbl_bat, self.lbl_c1, self.lbl_c2]:
-            telem_row.addWidget(card)
-        right.addLayout(telem_row)
-
-        self.map_widget = MapWidget()
-        self.map_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right.addWidget(self.map_widget, 1)
-
-        log_box = QGroupBox("Log de eventos")
-        log_lay = QVBoxLayout(log_box)
-        self.log_view = QTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumHeight(140)
-        self.log_view.setFont(QFont("monospace", 10))
-        log_lay.addWidget(self.log_view)
-        right.addWidget(log_box)
-
-        self.statusBar().showMessage("Sin conexión")
-
-    def _telem_card(self, label, value):
-        card = QGroupBox(label)
-        lay  = QVBoxLayout(card)
-        lbl  = QLabel(value)
-        lbl.setFont(QFont("monospace", 13))
-        lbl.setAlignment(Qt.AlignCenter)
-        lay.addWidget(lbl)
-        return card
-
-    def _set_telem(self, box, text):
-        box.findChild(QLabel).setText(text)
-
-    def _connect(self):
-        self.worker = BLEWorker()
-        self.worker.telemetry_received.connect(self._on_telemetry)
-        self.worker.log_message.connect(self._log)
-        self.worker.connected_signal.connect(self._on_connected)
-        self.worker.start()
-        self.btn_connect.setEnabled(False)
-        self.btn_connect.setText("🔍  Buscando...")
-        self.statusBar().showMessage("Buscando SPIKE por Bluetooth...")
-
-    def _disconnect(self):
-        if self.worker:
-            self.worker.stop()
-            self.worker.wait()
-            self.worker = None
-        self.btn_connect.setEnabled(True)
-        self.btn_connect.setText("🔵  Buscar y Conectar SPIKE")
-        self.btn_disconnect.setEnabled(False)
-        self.statusBar().showMessage("Sin conexión")
-
-    @pyqtSlot(bool)
-    def _on_connected(self, ok):
-        if ok:
-            self.btn_connect.setText("✅  Conectado")
-            self.btn_disconnect.setEnabled(True)
-            self.statusBar().showMessage("Conectado por Bluetooth ✅")
-        else:
-            self.btn_connect.setEnabled(True)
-            self.btn_connect.setText("🔵  Buscar y Conectar SPIKE")
-            self.btn_disconnect.setEnabled(False)
-            self.statusBar().showMessage("Desconectado")
-
-    def _cmd(self, action):
-        if not self.worker:
-            return
-        speed = self.speed_slider.value()
-        self.worker.send_cmd({"cmd": action, "speed": speed})
-        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        self._log(f"[{ts}] CMD → {action}  speed={speed}")
-        self.log_rows.append({
-            "timestamp": ts, "type": "cmd",
-            "action": action, "speed": speed,
-            "x": "", "y": "", "heading": "",
-            "color1": "", "color2": ""
-        })
-
-    def _reset_position(self):
-        self._cmd("reset_pos")
-        self.map_widget.reset()
-
-    @pyqtSlot(dict)
-    def _on_telemetry(self, data):
-        if "error" in data:
-            self._log(f"Error hub: {data['error']}")
-            return
-        if "msg" in data:
-            self._log(f"Hub: {data['msg']}")
-            return
-
-        x   = data.get("x", 0)
-        y   = data.get("y", 0)
-        hdg = data.get("heading", 0)
-        bat = data.get("battery", 0)
-        c1  = data.get("color1", "NONE")
-        c2  = data.get("color2", "NONE")
-        r1  = data.get("ref1", 0)
-        r2  = data.get("ref2", 0)
-
-        self._set_telem(self.lbl_x,   f"{x:.1f} mm")
-        self._set_telem(self.lbl_y,   f"{y:.1f} mm")
-        self._set_telem(self.lbl_hdg, f"{hdg:.1f}°")
-        self._set_telem(self.lbl_bat, f"{bat}%")
-        self._set_telem(self.lbl_c1,  f"{c1}\n({r1}%)")
-        self._set_telem(self.lbl_c2,  f"{c2}\n({r2}%)")
-
-        self.map_widget.update_position(x, y, hdg, c1, c2)
-
-        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        self.log_rows.append({
-            "timestamp": ts, "type": "telem",
-            "action": "", "speed": "",
-            "x": x, "y": y, "heading": hdg,
-            "color1": c1, "color2": c2
-        })
-
-    def _setup_keypress_timer(self):
-        self._key_timer = QTimer()
-        self._key_timer.setInterval(50)
-        self._key_timer.timeout.connect(self._drive_from_keys)
-        self._key_timer.start()
-
-    def keyPressEvent(self, e):
-        self._held.add(e.key())
-
-    def keyReleaseEvent(self, e):
-        self._held.discard(e.key())
-        if not self._held:
-            self._cmd("stop")
-
-    def _drive_from_keys(self):
-        if not self.worker or not self._held:
-            return
-        if   self._held & {Qt.Key_W, Qt.Key_Up}:   self._cmd("forward")
-        elif self._held & {Qt.Key_S, Qt.Key_Down}:  self._cmd("backward")
-        elif self._held & {Qt.Key_A, Qt.Key_Left}:  self._cmd("left")
-        elif self._held & {Qt.Key_D, Qt.Key_Right}: self._cmd("right")
-
-    def _log(self, msg):
-        self.log_view.append(msg)
-
-    def _export_csv(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Guardar log", "spike_log.csv", "CSV (*.csv)")
-        if not path:
-            return
-        with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                "timestamp", "type", "action", "speed",
-                "x", "y", "heading", "color1", "color2"])
-            writer.writeheader()
-            writer.writerows(self.log_rows)
-        self._log(f"Log guardado → {path}")
-
-    def closeEvent(self, e):
-        self._disconnect()
-        e.accept()
+def main():
+    root = tk.Tk()
+    root.minsize(340, 380)
+    app = DriveApp(root)
+    root.protocol("WM_DELETE_WINDOW", lambda: (app._ble.stop(), root.destroy()))
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec_())
+    main()
