@@ -44,6 +44,19 @@ MOTOR_MAP = {
     3: expandir_garra,
 }
 
+# Solo los colores que el sensor puede detectar según Pybricks docs
+COLOR_RGB = {
+    Color.RED:    (220,  50,  50),
+    Color.YELLOW: (220, 200,  50),
+    Color.GREEN:  ( 50, 200,  50),
+    Color.BLUE:   ( 50,  50, 220),
+    Color.WHITE:  (220, 220, 220),
+    Color.NONE:   ( 40,  40,  40),  # gris oscuro = sin color detectado
+}
+
+# Configurar sensor — solo estos 5 colores mejora la precisión
+sensor.detectable_colors([Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE, Color.WHITE])
+
 # Reset al inicio
 drive.reset()
 hub.imu.reset_heading(0)
@@ -88,12 +101,8 @@ while True:
     dist_mm  = int(drive.distance())
     heading  = int(hub.imu.heading()) % 360   # normalizar a 0-359
 
-    # Color como RGB (sensor.rgb() devuelve 0-100, convertir a 0-255)
     try:
-        rgb = sensor.rgb()
-        r = int(rgb[0] * 2.55)
-        g = int(rgb[1] * 2.55)
-        b = int(rgb[2] * 2.55)
+        r, g, b = COLOR_RGB.get(sensor.color(), (0, 0, 0))
     except Exception:
         r, g, b = 0, 0, 0
 

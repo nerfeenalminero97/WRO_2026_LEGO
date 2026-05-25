@@ -138,15 +138,29 @@ class HubPosition:
     def reset(self, x=0.0, y=0.0):
         self.x = x; self.y = y; self._prev_dist = 0
 
-    def update(self, dist_mm, heading_deg):
-        self.heading = float(heading_deg)
+    def update(self, dist_mm, heading_deg, heading_offset_deg=0.0):
+        """
+        heading_offset_deg: correction added to the raw hub heading before
+        computing dead-reckoning movement.
+
+        The heading is snapped to the nearest 90 deg multiple before computing
+        X/Y deltas so that straight moves always stay on a pure axis (no drift
+        from tiny IMU heading errors during a straight run).
+        The raw corrected heading is still stored in self.heading for drawing.
+        """
+        raw_heading = float(heading_deg)
+        corrected   = raw_heading + heading_offset_deg
+        self.heading = corrected          # full precision for arrow drawing
+
         delta = dist_mm - self._prev_dist
         self._prev_dist = dist_mm
         if abs(delta) > 500: delta = 0
-        rad = math.radians(self.heading)
+
+        # Snap to nearest 90 deg so movement is always axis-aligned
+        snapped = round(corrected / 90.0) * 90
+        rad = math.radians(snapped)
         self.x += delta * math.sin(rad)
-        # Y positivo = avanzar hacia abajo en canvas (heading=0 → py aumenta)
-        self.y += delta * math.cos(rad)
+        self.y -= delta * math.cos(rad)
 
 # ════════════════════════════════════════════════════════════════
 #  CAMPO  (236 x 115 cm en mm)
@@ -157,7 +171,7 @@ FIELD_H_MM = 1150.0
 # ════════════════════════════════════════════════════════════════
 #  EXPORTAR XLSX
 # ════════════════════════════════════════════════════════════════
-def export_xlsx(waypoints, path):
+def export_xlsx(waypoints, path, input_log=None):
     wb   = openpyxl.Workbook()
     thin = Side(style="thin", color="888888")
     brd  = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -182,8 +196,8 @@ def export_xlsx(waypoints, path):
     for i, wp in enumerate(waypoints, 1):
         ci = wp.get("color","#888888")
         D(ws1,i+1,1,i)
-        D(ws1,i+1,2,round(wp["x"])); D(ws1,i+1,3,round(wp["y"]))
-        D(ws1,i+1,4,round(wp["x"]/10)); D(ws1,i+1,5,round(wp["y"]/10))
+        D(ws1,i+1,2,round(wp["x_mm"])); D(ws1,i+1,3,round(wp["y_mm"]))
+        D(ws1,i+1,4,round(wp["x_mm"]/10)); D(ws1,i+1,5,round(wp["y_mm"]/10))
         D(ws1,i+1,6,wp.get("label",""), bg=ci)
         D(ws1,i+1,7,ci)
         D(ws1,i+1,8,wp.get("note",""))
@@ -191,6 +205,21 @@ def export_xlsx(waypoints, path):
 
     for w, c in zip([5,12,12,10,10,16,12,20], range(1,9)):
         ws1.column_dimensions[openpyxl.utils.get_column_letter(c)].width = w
+
+    if input_log:
+        ws2 = wb.create_sheet("Inputs Replay")
+        for c, h in enumerate(["#","Time (ms)","Speed","Turn","Motor","Motor Val","Turn Cmd"], 1):
+            H(ws2, 1, c, h)
+        for i, cmd in enumerate(input_log, 1):
+            D(ws2, i+1, 1, i)
+            D(ws2, i+1, 2, cmd["t_ms"])
+            D(ws2, i+1, 3, cmd["speed"])
+            D(ws2, i+1, 4, cmd["turn"])
+            D(ws2, i+1, 5, cmd["mc"])
+            D(ws2, i+1, 6, cmd["mv"])
+            D(ws2, i+1, 7, cmd["tc"])
+        for w, c in zip([5, 12, 10, 10, 10, 12, 12], range(1, 8)):
+            ws2.column_dimensions[openpyxl.utils.get_column_letter(c)].width = w
 
     wb.save(path)
 
@@ -206,6 +235,7 @@ GRN  = "#00FF88"
 AMB  = "#FFB800"
 RED  = "#FF4444"
 PRP  = "#BB86FC"
+ORG  = "#FF9500"
 
 # ════════════════════════════════════════════════════════════════
 #  APP
@@ -217,11 +247,16 @@ class WROApp:
         self.root = root
         self.root.title("WRO 2026 — Control + Mapa")
         self.root.configure(bg=BG)
-        self.root.geometry("1300x750")
-        self.root.minsize(1000, 620)
+        self.root.geometry("1300x780")
+        self.root.minsize(1000, 650)
 
         self._pub  = BLEPublisher()
         self._hub  = HubPosition()
+
+        # ── HEADING OFFSET CALIBRATION ───────────────────────────
+        # Positive value rotates the robot arrow CW on screen.
+        # Adjust until "forward on screen" matches real robot forward.
+        self._heading_offset = tk.IntVar(value=0)
 
         # Estado BLE
         self._hub_online  = False
@@ -237,28 +272,32 @@ class WROApp:
         self.spd        = tk.IntVar(value=300)
 
         # Mapa
-        self._map_img_orig  = None   # PIL image original
-        self._map_photo     = None   # ImageTk para canvas
-        self._map_w = self._map_h = 1  # tamaño actual en canvas
+        self._map_img_orig  = None
+        self._map_photo     = None
+        self._map_w = self._map_h = 1
 
         # Origen del robot en el canvas (pixels)
-        self._origin_px = None    # (px, py) donde el usuario colocó el robot
-        self._robot_px  = None    # posición actual en canvas
+        self._origin_px = None
+        self._robot_px  = None
 
-        # Waypoints: lista de {px, py, x_mm, y_mm, color, label, note}
+        # Waypoints
         self._waypoints: list[dict] = []
-        self._wp_selected = None   # índice seleccionado
+        self._wp_selected = None
 
-        # Modo de click en el mapa
-        # "origin" = colocar robot, "waypoint" = agregar waypoint, "nav" = navegar
+        # Modo de click
         self._click_mode = tk.StringVar(value="origin")
 
         # Color activo para waypoints
         self._active_color = "#FFD700"
         self._active_label = tk.StringVar(value="Punto")
 
-        # Trail de la trayectoria real
+        # Trail
         self._trail: deque = deque(maxlen=2000)
+
+        # Input recording
+        self._input_log: list[dict] = []
+        self._recording   = False
+        self._record_t0   = 0.0
 
         self._build()
         self._load_map()
@@ -280,10 +319,10 @@ class WROApp:
                                          highlightthickness=0)
         self.color_indicator.pack(side="right", padx=2)
         self.color_indicator.create_oval(2,2,20,20, fill="#333", outline="#555", tags="dot")
-        self.hex_lbl = tk.Label(tb, text="#------", bg="#111", fg=DIM,
-                                font=("Courier",10))
+        self.hex_lbl = tk.Label(tb, text="Sin señal", bg="#111", fg=DIM,
+                                font=("Helvetica",10,"bold"))
         self.hex_lbl.pack(side="right", padx=4)
-        tk.Label(tb, text="Color sensor:", bg="#111", fg=DIM,
+        tk.Label(tb, text="Color:", bg="#111", fg=DIM,
                  font=("Helvetica",9)).pack(side="right", padx=4)
         tk.Frame(self.root, bg="#252525", height=1).pack(fill="x")
 
@@ -295,7 +334,6 @@ class WROApp:
         mf = tk.Frame(body, bg="#000")
         mf.pack(side="left", fill="both", expand=True)
 
-        # Barra de modo encima del mapa
         modebar = tk.Frame(mf, bg="#111")
         modebar.pack(fill="x")
         tk.Label(modebar, text="Modo click:", bg="#111", fg=DIM,
@@ -321,24 +359,22 @@ class WROApp:
         self.cv.bind("<Button-1>",    self._on_canvas_click)
         self.cv.bind("<Button-3>",    self._on_canvas_right_click)
 
-        # Pos label sobre el canvas
         self.pos_lbl = tk.Label(mf, text="X=0mm  Y=0mm  Hdg=0°",
                                 bg="#111", fg=CYAN, font=("Courier",9))
         self.pos_lbl.pack(fill="x")
 
         # ── PANEL DERECHO ──────────────────────────────────────────
-        pf = tk.Frame(body, bg=BG, width=270)
+        pf = tk.Frame(body, bg=BG, width=280)
         pf.pack(side="right", fill="y", padx=(0,0))
         pf.pack_propagate(False)
 
-        # Scroll
         c2 = tk.Canvas(pf, bg=BG, highlightthickness=0)
         sb = tk.Scrollbar(pf, orient="vertical", command=c2.yview)
         c2.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         c2.pack(side="left", fill="both", expand=True)
-        inn = tk.Frame(c2, bg=BG, width=255)
-        c2.create_window((0,0), window=inn, anchor="nw", width=255)
+        inn = tk.Frame(c2, bg=BG, width=265)
+        c2.create_window((0,0), window=inn, anchor="nw", width=265)
         inn.bind("<Configure>", lambda e: c2.configure(scrollregion=c2.bbox("all")))
 
         def sep(): tk.Frame(inn, bg="#252525", height=1).pack(fill="x", pady=6)
@@ -380,6 +416,72 @@ class WROApp:
 
         self.cmd_lbl = tk.Label(inn,text="spd=0  trn=0",bg=BG,fg=DIM,font=("Courier",8))
         self.cmd_lbl.pack()
+
+        sep()
+
+        # ══════════════════════════════════════════════════════════
+        #  HEADING OFFSET CALIBRATION BLOCK
+        # ══════════════════════════════════════════════════════════
+        lbl("🧭 CALIBRAR DIRECCIÓN DEL ROBOT")
+
+        cal_info = tk.Label(inn,
+            text="Ajusta hasta que la flecha en pantalla\napunte igual que el robot real.",
+            bg=BG, fg=DIM, font=("Helvetica",7,"italic"), justify="left")
+        cal_info.pack(anchor="w", padx=10, pady=(0,4))
+
+        # Compass rose canvas — shows robot arrow live
+        self._compass_canvas = tk.Canvas(inn, bg=CARD, width=80, height=80,
+                                         highlightthickness=1,
+                                         highlightbackground="#333")
+        self._compass_canvas.pack(pady=4)
+        self._draw_compass()
+
+        # ±1° / ±15° / ±90° buttons in two rows
+        row1 = tk.Frame(inn,bg=BG); row1.pack(fill="x",padx=8,pady=1)
+        row2 = tk.Frame(inn,bg=BG); row2.pack(fill="x",padx=8,pady=1)
+
+        bk = dict(relief="flat", cursor="hand2", font=("Helvetica",9),
+                  bg=CARD, fg=ORG, activebackground="#2A2A2A",
+                  activeforeground="#FFF", padx=4, pady=3)
+
+        for delta, label in [(-90,"↺90°"),(-15,"↺15°"),(-1,"↺1°")]:
+            tk.Button(row1, text=label, **bk,
+                      command=lambda d=delta: self._adjust_offset(d)
+                      ).pack(side="left", padx=2, expand=True, fill="x")
+        for delta, label in [(1,"↻1°"),(15,"↻15°"),(90,"↻90°")]:
+            tk.Button(row2, text=label, **bk,
+                      command=lambda d=delta: self._adjust_offset(d)
+                      ).pack(side="left", padx=2, expand=True, fill="x")
+
+        # Slider for fine/coarse adjustment
+        slrow = tk.Frame(inn,bg=BG); slrow.pack(fill="x",padx=8,pady=3)
+        tk.Label(slrow,text="Offset:",bg=BG,fg=DIM,font=("Helvetica",8)).pack(side="left")
+        tk.Scale(slrow, variable=self._heading_offset,
+                 from_=-180, to=180, orient="horizontal",
+                 bg=BG, fg=ORG, troughcolor="#2A2A2A", highlightthickness=0,
+                 sliderrelief="flat", activebackground=ORG, length=145,
+                 command=lambda _: self._on_offset_change()
+                 ).pack(side="right")
+
+        # Value label + Reset
+        oval_row = tk.Frame(inn,bg=BG); oval_row.pack(fill="x",padx=8,pady=(0,4))
+        self.offset_lbl = tk.Label(oval_row, text="0°", bg=BG, fg=ORG,
+                                   font=("Courier",9,"bold"))
+        self.offset_lbl.pack(side="left")
+        tk.Button(oval_row, text="Reset 0°", relief="flat", cursor="hand2",
+                  font=("Helvetica",8), bg="#2A1A00", fg=ORG,
+                  activebackground="#3A2A00", padx=6, pady=2,
+                  command=self._reset_offset).pack(side="right")
+
+        # Quick presets
+        preset_row = tk.Frame(inn,bg=BG); preset_row.pack(fill="x",padx=8,pady=(0,4))
+        tk.Label(preset_row,text="Presets:",bg=BG,fg=DIM,font=("Helvetica",7)).pack(side="left")
+        for val, label in [(0,"↑ Norte"),(90,"→ Este"),(180,"↓ Sur"),(-90,"← Oeste")]:
+            tk.Button(preset_row, text=label, relief="flat", cursor="hand2",
+                      font=("Helvetica",7), bg=CARD, fg=DIM,
+                      activebackground="#252525", padx=3, pady=2,
+                      command=lambda v=val: self._set_offset(v)
+                      ).pack(side="left", padx=1)
 
         sep()
 
@@ -456,7 +558,6 @@ class WROApp:
                   font=("Helvetica",8),padx=4,
                   command=self._apply_hex).pack(side="left")
 
-        # Colores rápidos WRO
         qrow = tk.Frame(inn,bg=BG); qrow.pack(fill="x",padx=8,pady=2)
         tk.Label(qrow,text="Rápidos:",bg=BG,fg=DIM,font=("Helvetica",8)).pack(side="left")
         for hex_c, name in [("#FFD700","Amarillo"),("#2255CC","Azul"),
@@ -469,7 +570,6 @@ class WROApp:
 
         sep()
 
-        # Lista de waypoints
         lbl("LISTA DE WAYPOINTS")
         self.wp_listbox = tk.Listbox(inn,bg=CARD,fg=TEXT,selectbackground="#0F3460",
                                      font=("Courier",8),height=8,relief="flat",
@@ -490,12 +590,34 @@ class WROApp:
 
         sep()
 
+        sep()
+
+        # ── GRABACIÓN ────────────────────────────────────────────
+        lbl("GRABACIÓN DE INPUTS")
+
+        rec_row = tk.Frame(inn, bg=BG); rec_row.pack(fill="x", padx=8, pady=2)
+        bkr = dict(relief="flat", cursor="hand2", font=("Helvetica",9), pady=4, padx=6)
+        tk.Button(rec_row, text="● Grabar", bg="#3A1A1A", fg=RED, **bkr,
+                  command=self._start_recording).pack(side="left", padx=2)
+        tk.Button(rec_row, text="■ Parar",  bg=CARD,     fg=DIM, **bkr,
+                  command=self._stop_recording).pack(side="left", padx=2)
+        tk.Button(rec_row, text="▶ Replay", bg="#1A3A1A", fg=GRN, **bkr,
+                  command=self._start_replay).pack(side="left", padx=2)
+
+        rec_row2 = tk.Frame(inn, bg=BG); rec_row2.pack(fill="x", padx=8, pady=2)
+        tk.Button(rec_row2, text="🗑 Limpiar", bg=CARD, fg=DIM, **bkr,
+                  command=self._clear_log).pack(side="left", padx=2)
+        self._rec_lbl = tk.Label(rec_row2, text="Sin grabación", bg=BG, fg=DIM,
+                                 font=("Courier", 8))
+        self._rec_lbl.pack(side="left", padx=8)
+
+        sep()
+
         bm2 = dict(relief="flat",cursor="hand2",font=("Helvetica",10),pady=7)
         tk.Button(inn,text="💾  Exportar XLSX",bg="#1A3A1A",fg=GRN,
                   activebackground="#2A4A2A",**bm2,
                   command=self._export).pack(fill="x",padx=8,pady=2)
 
-        # Posición
         sep()
         lbl("POSICIÓN REAL")
         pos_card = tk.Frame(inn,bg=CARD); pos_card.pack(fill="x",padx=8,pady=2)
@@ -505,14 +627,69 @@ class WROApp:
         self.pos_card_lbl.pack(padx=10,pady=6,anchor="w")
 
     # ─────────────────────────────────────────────────────────────
+    #  HEADING OFFSET HELPERS
+    # ─────────────────────────────────────────────────────────────
+    def _adjust_offset(self, delta: int):
+        new_val = (self._heading_offset.get() + delta + 360) % 360
+        if new_val > 180: new_val -= 360          # keep in [-180, 180]
+        self._heading_offset.set(new_val)
+        self._on_offset_change()
+
+    def _set_offset(self, val: int):
+        self._heading_offset.set(val)
+        self._on_offset_change()
+
+    def _reset_offset(self):
+        self._heading_offset.set(0)
+        self._on_offset_change()
+
+    def _on_offset_change(self):
+        v = self._heading_offset.get()
+        sign = "+" if v >= 0 else ""
+        self.offset_lbl.config(text=f"{sign}{v}°")
+        # Resets dead-reckoning trail when user recalibrates so drift doesn't compound
+        if self._origin_px is not None:
+            self._hub.reset()
+            self._trail.clear()
+            self._trail.append((0.0, 0.0))
+        self._draw_compass()
+        self._redraw()
+
+    def _draw_compass(self):
+        """Small compass rose showing current robot forward direction with offset applied."""
+        cc = self._compass_canvas
+        cc.delete("all")
+        cx = cy = 40; r = 32
+        # Circle
+        cc.create_oval(cx-r, cy-r, cx+r, cy+r, outline="#333", width=1)
+        # Cardinal labels
+        for ang, label in [(0,"N"),(90,"E"),(180,"S"),(270,"W")]:
+            rad = math.radians(ang)
+            lx = cx + (r+8)*math.sin(rad)
+            ly = cy - (r+8)*math.cos(rad)
+            cc.create_text(lx, ly, text=label, fill="#444", font=("Helvetica",6))
+        # Robot arrow — heading=0 + offset
+        off = self._heading_offset.get() if hasattr(self, '_heading_offset') else 0
+        rad = math.radians(off)
+        tx = cx + r*0.85*math.sin(rad)
+        ty = cy - r*0.85*math.cos(rad)
+        # Arrow shaft
+        cc.create_line(cx, cy, tx, ty, fill=AMB, width=3, arrow="last",
+                       arrowshape=(8,10,4))
+        # Center dot
+        cc.create_oval(cx-3,cy-3,cx+3,cy+3, fill="#FFF", outline="")
+        # Offset text
+        v = off; sign = "+" if v >= 0 else ""
+        cc.create_text(cx, cy+r+10, text=f"{sign}{v}°",
+                       fill=ORG, font=("Courier",7,"bold"))
+
+    # ─────────────────────────────────────────────────────────────
     #  MAP LOADING
     # ─────────────────────────────────────────────────────────────
     def _load_map(self):
-        """Carga mapa_wro2026.jpg desde la misma carpeta que el script."""
         script_dir = os.path.dirname(os.path.abspath(__file__))
         img_path   = os.path.join(script_dir, self.MAP_IMG)
         if not os.path.exists(img_path):
-            # Fallback: buscar en CWD
             img_path = self.MAP_IMG
         try:
             self._map_img_orig = Image.open(img_path)
@@ -525,13 +702,11 @@ class WROApp:
         self._render_map()
 
     def _render_map(self):
-        """Redibuja el mapa escalado al tamaño actual del canvas."""
         w = self.cv.winfo_width()
         h = self.cv.winfo_height()
         if w < 10 or h < 10: return
 
         if self._map_img_orig:
-            # Fit image keeping aspect ratio
             img_w, img_h = self._map_img_orig.size
             scale = min(w / img_w, h / img_h)
             nw = int(img_w * scale)
@@ -549,17 +724,13 @@ class WROApp:
 
     # ─────────────────────────────────────────────────────────────
     #  COORDINATE CONVERSION
-    #  Canvas px ↔ field mm
-    #  El mapa ocupa self._map_w × self._map_h pixels en el canvas
     # ─────────────────────────────────────────────────────────────
     def _mm_to_px(self, x_mm, y_mm):
-        """Field mm → canvas px. Y=0 está abajo en el campo, arriba en canvas."""
         px = int(x_mm / FIELD_W_MM * self._map_w)
-        py = int(y_mm / FIELD_H_MM * self._map_h)   # sin invertir — el mapa ya tiene Y natural
+        py = int(y_mm / FIELD_H_MM * self._map_h)
         return px, py
 
     def _px_to_mm(self, px, py):
-        """Canvas px → field mm."""
         x_mm = px / self._map_w * FIELD_W_MM
         y_mm = py / self._map_h * FIELD_H_MM
         return x_mm, y_mm
@@ -572,10 +743,8 @@ class WROApp:
         w  = cv.winfo_width()
         h  = cv.winfo_height()
 
-        # Fondo negro
         cv.create_rectangle(0,0,w,h,fill="#000",outline="")
 
-        # Imagen del mapa centrada
         if self._map_photo:
             ox = (w - self._map_w) // 2
             oy = (h - self._map_h) // 2
@@ -584,18 +753,15 @@ class WROApp:
             cv.create_text(w//2, h//2, text="mapa_wro2026.jpg no encontrado",
                            fill=DIM, font=("Helvetica",12))
 
-        # Offset de la imagen en el canvas (para conversiones correctas)
         self._map_ox = (w - self._map_w) // 2
         self._map_oy = (h - self._map_h) // 2
 
-        # Trail
         trail = list(self._trail)
         for i in range(1, len(trail)):
             x1,y1 = self._world_to_canvas(*trail[i-1])
             x2,y2 = self._world_to_canvas(*trail[i])
             cv.create_line(x1,y1,x2,y2, fill="#00AAAA", width=2)
 
-        # Waypoints y ruta
         for i, wp in enumerate(self._waypoints):
             cx,cy = self._wp_canvas(wp)
             sel   = (i == self._wp_selected)
@@ -608,43 +774,40 @@ class WROApp:
                            fill="#FFF", font=("Helvetica",7,"bold"),
                            tags="wplabel")
 
-        # Líneas entre waypoints
         for i in range(1, len(self._waypoints)):
             x1,y1 = self._wp_canvas(self._waypoints[i-1])
             x2,y2 = self._wp_canvas(self._waypoints[i])
             cv.create_line(x1,y1,x2,y2, fill=CYAN, width=1, dash=(5,3))
 
-        # Robot
         if self._origin_px is not None:
             wx, wy = self._hub_world_pos()
             cx, cy = self._world_to_canvas(wx, wy)
             self._draw_robot(cx, cy, self._hub.heading)
 
     def _world_to_canvas(self, x_mm, y_mm):
-        """Coordenadas mundo (mm) → canvas px, con offset del mapa."""
         px, py = self._mm_to_px(x_mm, y_mm)
         return px + getattr(self,'_map_ox',0), py + getattr(self,'_map_oy',0)
 
     def _canvas_to_world(self, cx, cy):
-        """Canvas px → coordenadas mundo (mm)."""
         ox = getattr(self,'_map_ox',0)
         oy = getattr(self,'_map_oy',0)
         return self._px_to_mm(cx - ox, cy - oy)
 
     def _wp_canvas(self, wp):
-        """Convierte un waypoint a coords canvas."""
         return self._world_to_canvas(wp["x_mm"], wp["y_mm"])
 
     def _hub_world_pos(self):
-        """Posición actual del hub en coordenadas mundo mm."""
         if self._origin_px is None:
             return 0.0, 0.0
         ox_mm, oy_mm = self._canvas_to_world(*self._origin_px)
         return ox_mm + self._hub.x, oy_mm + self._hub.y
 
     def _draw_robot(self, cx, cy, heading_deg):
-        """Triángulo apuntando en la dirección del heading.
-        Con Y no invertido: heading=0 apunta arriba (py decrece), igual que antes."""
+        """
+        heading_deg here is already the corrected heading (raw + offset),
+        stored in HubPosition.heading after update().
+        Triangle tip points in the direction the robot is facing.
+        """
         size = 14
         ang  = math.radians(heading_deg)
         tx = cx + size * math.sin(ang)
@@ -696,7 +859,6 @@ class WROApp:
         self._redraw()
 
     def _on_canvas_right_click(self, event):
-        """Click derecho = borrar waypoint cercano."""
         for i, wp in enumerate(self._waypoints):
             cx, cy = self._wp_canvas(wp)
             if math.hypot(event.x - cx, event.y - cy) < 12:
@@ -720,7 +882,7 @@ class WROApp:
         val = self.hex_entry_var.get().strip()
         if not val.startswith("#"): val = "#" + val
         try:
-            self.root.winfo_rgb(val)  # valida el color
+            self.root.winfo_rgb(val)
             self._set_color(val)
         except Exception:
             self.hex_entry_var.set(self._active_color)
@@ -729,7 +891,6 @@ class WROApp:
         self._active_color = hex_c
         self.hex_entry_var.set(hex_c)
         self.color_btn_preview.config(bg=hex_c)
-        # Actualizar waypoint seleccionado si existe
         if self._wp_selected is not None and self._wp_selected < len(self._waypoints):
             self._waypoints[self._wp_selected]["color"] = hex_c
             self._refresh_wp_list()
@@ -799,8 +960,12 @@ class WROApp:
             initialfile="wro2026_ruta.xlsx")
         if not path: return
         try:
-            export_xlsx(self._waypoints, path)
-            messagebox.showinfo("✓ Guardado", f"{len(self._waypoints)} waypoints\n{path}")
+            export_xlsx(self._waypoints, path, input_log=self._input_log or None)
+            n_cmds = len(self._input_log)
+            msg = f"{len(self._waypoints)} waypoints"
+            if n_cmds:
+                msg += f"\n{n_cmds} inputs grabados"
+            messagebox.showinfo("✓ Guardado", f"{msg}\n{path}")
         except Exception as e:
             messagebox.showerror("Error",str(e))
 
@@ -837,18 +1002,51 @@ class WROApp:
         self._mheld=0; self._mdir=0
 
     # ─────────────────────────────────────────────────────────────
-    #  GIRO PRECISO — el hub lo ejecuta localmente con drive.turn()
+    #  GIRO PRECISO
     # ─────────────────────────────────────────────────────────────
     def _do_turn(self, degrees: int):
-        """Envía el comando de giro al hub. El hub ejecuta drive.turn(degrees)
-        que es bloqueante y preciso. La PC solo manda el comando una vez."""
-        # Enviamos turn_cmd = degrees, speed=0, turn=0
+        if self._recording:
+            t_ms = int((time.monotonic() - self._record_t0) * 1000)
+            self._input_log.append({"t_ms": t_ms,       "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": degrees})
+            self._input_log.append({"t_ms": t_ms + 500, "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": 0})
+            self._rec_lbl.config(text=f"● REC  {len(self._input_log)} cmds", fg=RED)
         self._pub.send(0, 0, 0, 0, degrees)
         sign = "↺" if degrees < 0 else "↻"
         self.turn_lbl.config(text=f"Girando {sign} {abs(degrees)}°...", fg=CYAN)
-        # Después de ~2s limpiamos el turn_cmd para que no quede enviando
         self.root.after(500, lambda: self._pub.send(0, 0, 0, 0, 0))
         self.root.after(2000, lambda: self.turn_lbl.config(text=""))
+
+    # ─────────────────────────────────────────────────────────────
+    #  GRABACIÓN / REPLAY
+    # ─────────────────────────────────────────────────────────────
+    def _start_recording(self):
+        self._input_log.clear()
+        self._recording  = True
+        self._record_t0  = time.monotonic()
+        self._rec_lbl.config(text="● REC  0 cmds", fg=RED)
+
+    def _stop_recording(self):
+        self._recording = False
+        n = len(self._input_log)
+        self._rec_lbl.config(text=f"Grabado: {n} cmds", fg=GRN if n else DIM)
+
+    def _clear_log(self):
+        self._input_log.clear()
+        self._recording = False
+        self._rec_lbl.config(text="Sin grabación", fg=DIM)
+
+    def _start_replay(self):
+        if not self._input_log:
+            return
+        self._rec_lbl.config(text="▶ Replay...", fg=CYAN)
+        for entry in self._input_log:
+            self.root.after(
+                entry["t_ms"],
+                lambda e=entry: self._pub.send(e["speed"], e["turn"], e["mc"], e["mv"], e["tc"])
+            )
+        last_t = self._input_log[-1]["t_ms"]
+        self.root.after(last_t + 300, lambda: self._pub.send(0, 0, 0, 0, 0))
+        self.root.after(last_t + 400, lambda: self._rec_lbl.config(text="Replay listo", fg=GRN))
 
     # ─────────────────────────────────────────────────────────────
     #  LOOP DE CONTROL (50ms)
@@ -860,14 +1058,17 @@ class WROApp:
         left ="a" in k or "left"  in k or b=="left"
         right="d" in k or "right" in k or b=="right"
         spd = s if fwd else (-s if back else 0)
-        trn = TURN_RATE if right else (-TURN_RATE if left else 0)
+        trn = -TURN_RATE if right else (TURN_RATE if left else 0)
         mc  = self._mheld
         mv  = MOTOR_SPD * self._mdir if mc else 0
-        # tc=0 en drive normal (giros precisos se mandan desde _do_turn)
         cmd = (spd, trn, mc, mv, 0)
         if cmd != self._last_cmd:
             self._pub.send(*cmd)
             self._last_cmd = cmd
+            if self._recording:
+                t_ms = int((time.monotonic() - self._record_t0) * 1000)
+                self._input_log.append({"t_ms": t_ms, "speed": spd, "turn": trn, "mc": mc, "mv": mv, "tc": 0})
+                self._rec_lbl.config(text=f"● REC  {len(self._input_log)} cmds", fg=RED)
             moving = spd!=0 or trn!=0
             self.ble_lbl.config(
                 text=f"● {'Activo' if moving else 'Conectado ✓'}",
@@ -891,13 +1092,16 @@ class WROApp:
             heading  = int(vals[1])
             r, g, b  = int(vals[2]), int(vals[3]), int(vals[4])
             hex_c    = f"#{r:02X}{g:02X}{b:02X}"
-            self._hub.update(dist_mm, heading)
+            # ── Apply heading offset to dead-reckoning ──────────
+            offset = self._heading_offset.get()
+            self._hub.update(dist_mm, heading, heading_offset_deg=offset)
             wx, wy = self._hub_world_pos()
             self._trail.append((wx, wy))
             self._last_rgb = (r,g,b)
             self._last_hex = hex_c
             self._hub_online = True
-            self.root.after(0, self._on_hub, heading, hex_c, r, g, b)
+            # Pass corrected heading to UI
+            self.root.after(0, self._on_hub, self._hub.heading, hex_c, r, g, b)
 
         try:
             sc = BleakScanner(detection_callback=on_adv, scanning_mode="passive")
@@ -907,18 +1111,32 @@ class WROApp:
             while True:
                 await asyncio.sleep(1)
 
+    # Nombres para los RGB exactos que envía spikemapper.py
+    _CNAMES = {
+        (220,  50,  50): "Rojo",
+        (220, 200,  50): "Amarillo",
+        ( 50, 200,  50): "Verde",
+        ( 50,  50, 220): "Azul",
+        (220, 220, 220): "Blanco",
+        ( 40,  40,  40): "Sin color",
+    }
+
     def _on_hub(self, heading, hex_c, r, g, b):
         wx, wy = self._hub_world_pos()
         self.pos_lbl.config(
-            text=f"X={round(wx)}mm  Y={round(wy)}mm  Hdg={heading}°")
+            text=f"X={round(wx)}mm  Y={round(wy)}mm  Hdg={round(heading)}°")
         self.pos_card_lbl.config(
-            text=f"X={round(wx)} mm\nY={round(wy)} mm\nHeading={heading}°")
+            text=f"X={round(wx)} mm\nY={round(wy)} mm\nHeading={round(heading)}°")
         self.ble_lbl.config(text="● Conectado ✓", fg=GRN)
-        # Color sensor
-        self.hex_lbl.config(text=hex_c, fg=hex_c if r+g+b > 30 else DIM)
+
+        cname   = self._CNAMES.get((r, g, b), hex_c)
+        is_dark = r + g + b < 80
+        lbl_fg  = TEXT if is_dark else hex_c
+        outline = "#AAA" if is_dark else "#888"
+        self.hex_lbl.config(text=f"{cname}", fg=lbl_fg)
         self.color_indicator.delete("dot")
-        self.color_indicator.create_oval(2,2,20,20, fill=hex_c,
-                                          outline="#888", tags="dot")
+        self.color_indicator.create_oval(2, 2, 20, 20, fill=hex_c,
+                                         outline=outline, tags="dot")
         self._redraw()
 
 # ════════════════════════════════════════════════════════════════
