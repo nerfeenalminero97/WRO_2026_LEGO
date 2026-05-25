@@ -4,7 +4,6 @@ from pybricks.pupdevices import Motor, ColorSensor
 from pybricks.parameters import Port, Color, Stop, Direction
 from pybricks.tools import wait
 
-from TrabajoDeShon import giroscopio
 
 class Robot:
     def __init__(self):
@@ -28,6 +27,38 @@ class Robot:
         )
         
 robot = Robot()
+
+def motor_pair_run(velocidad, velocidad2, robot):
+    robot.motor_mf.run(velocidad)
+    robot.motor_mb.run(velocidad2)
+
+def giroscopio(angulo, velocidad, velocidad2, comparador, robot):
+    if comparador == 1:  
+        while True:
+            motor_pair_run(velocidad, velocidad2, robot)
+
+            if robot.hub.imu.heading() >= angulo:
+                break
+
+        stop(robot)
+
+    if comparador == 2:  
+        while True:
+            motor_pair_run(velocidad, velocidad2, robot)
+
+            if robot.hub.imu.heading() <= angulo:
+                break
+
+        stop(robot)
+
+    if comparador == 3:  
+        while True:
+            motor_pair_run(velocidad, velocidad2, robot)
+
+            if abs(robot.hub.imu.heading()) == angulo:
+                break
+
+        stop(robot)
 
 
 def stop(robot):
@@ -101,6 +132,7 @@ def leer_color(robot):
         robot.color = 0 
     giroscopio(175, -100, 100, 2, robot)
     SA_posicion_relativa(0, 200, 200, 1, robot)
+    return robot.lista_colores
 
 
 def leer_lista(robot):
@@ -109,3 +141,16 @@ def leer_lista(robot):
             robot.dicc_colores[color] += 1
         else:
             robot.dicc_colores[color] = 1
+    #Comparador solo para mostrar el color que mas se repite en la lista, no es necesario para el funcionamiento del programa
+    max_color = max(robot.dicc_colores, key=robot.dicc_colores.get)
+    print(f"Color que más se repite: {max_color} ({robot.dicc_colores[max_color]} veces)")
+
+    return robot.dicc_colores
+
+def main():
+    print("Leer color:")
+    print(leer_color(robot))
+    print("Leer lista:")
+    print(leer_lista(robot))
+
+main()
