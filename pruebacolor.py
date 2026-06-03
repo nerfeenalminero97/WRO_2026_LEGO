@@ -139,7 +139,7 @@ def leer_lista(robot):
     for color in robot.lista_colores:
         if color in robot.dicc_colores:
             robot.dicc_colores[color] += 1
-        else:
+        else:3
             robot.dicc_colores[color] = 1
     #Comparador solo para mostrar el color que mas se repite en la lista, no es necesario para el funcionamiento del programa
     max_color = max(robot.dicc_colores, key=robot.dicc_colores.get)
