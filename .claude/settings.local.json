@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:docs.pybricks.com)"
+      "WebFetch(domain:docs.pybricks.com)",
+      "Bash(identify /Users/chuby/Desktop/LegoWRO/WRO_2026_LEGO/mapa_wro2026.jpg)"
     ]
   }
 }
