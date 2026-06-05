@@ -49,6 +49,105 @@ TILE_BLANC = (330,  910)
 # OBS_1=(860, 400)  OBS_2=(860,1010)  OBS_3=(1560,400)  OBS_4=(1560,1010)
 
 # ════════════════════════════════════════════════════════════════════════
+#  WAYPOINTS — exportados del Simulador WRO 2026
+# ════════════════════════════════════════════════════════════════════════
+WP00 = (217, 236)
+WP01 = (1062, 253)
+WP02 = (1053, 105)
+WP03 = (755, 109)
+WP04 = (532, 114)
+WP05 = (1300, 107)
+WP06 = (1450, 210)
+WP07 = (1590, 260)
+WP08 = (1742, 384)
+WP09 = (1746, 264)
+WP10 = (1757, 97)
+WP11 = (1433, 101)
+WP12 = (180, 139)
+WP13 = (174, 238)
+WP14 = (1852, 260)
+WP15 = (1864, 178)
+WP16 = (2047, 182)
+WP17 = (2255, 210)
+WP18 = (2251, 305)
+WP19 = (1993, 315)
+WP20 = (2023, 547)
+WP21 = (2015, 654)
+WP22 = (1759, 669)
+WP23 = (1669, 667)
+WP24 = (1536, 680)
+WP25 = (1463, 785)
+WP26 = (1270, 1002)
+WP27 = (1266, 845)
+WP28 = (1875, 759)
+WP29 = (2042, 775)
+WP30 = (2036, 478)
+WP31 = (2255, 485)
+WP32 = (1939, 493)
+WP33 = (1892, 596)
+WP34 = (1884, 693)
+WP35 = (1783, 704)
+WP36 = (1708, 704)
+WP37 = (1575, 729)
+WP38 = (1577, 790)
+WP39 = (1845, 815)
+WP40 = (1849, 942)
+WP41 = (1849, 1017)
+WP42 = (2027, 995)
+WP43 = (2094, 995)
+WP44 = (2246, 995)
+WP45 = (2248, 783)
+WP46 = (2242, 599)
+WP47 = (2242, 371)
+WP48 = (2242, 245)
+WP49 = (1292, 249)
+WP50 = (1210, 247)
+WP51 = (1210, 384)
+WP52 = (1208, 255)
+WP53 = (687, 251)
+WP54 = (663, 352)
+WP55 = (663, 459)
+WP56 = (530, 457)
+WP57 = (436, 455)
+WP58 = (324, 466)
+WP59 = (493, 451)
+WP60 = (626, 453)
+WP61 = (672, 466)
+WP62 = (680, 644)
+WP63 = (860, 644)
+WP64 = (980, 644)
+WP65 = (1101, 657)
+WP66 = (1208, 674)
+WP67 = (599, 637)
+WP68 = (472, 624)
+WP69 = (382, 624)
+WP70 = (326, 622)
+WP71 = (1268, 697)
+WP72 = (1219, 742)
+WP73 = (1201, 798)
+WP74 = (968, 798)
+WP75 = (498, 807)
+WP76 = (365, 807)
+WP77 = (1193, 738)
+WP78 = (1167, 845)
+WP79 = (1045, 850)
+WP80 = (599, 841)
+WP81 = (453, 860)
+WP82 = (369, 998)
+WP83 = (657, 704)
+WP84 = (1208, 684)
+WP85 = (850, 710)
+WP86 = (813, 729)
+
+# Zonas definidas en el simulador
+ZONA_PARKING           = (1734, 384)
+ZONA_DIANA_BLANCO      = (1207, 996)
+ZONA_MARCO_DE_MOSAICO  = (1226, 688)
+ZONA_DIANA_VERDE       = (1556, 707)
+ZONA_DIANA_AZUL        = (1213, 396)
+ZONA_DIANA_AMARILLO    = (849, 702)
+
+# ════════════════════════════════════════════════════════════════════════
 #  GARRA — calibrar en el robot (mismos motores que spikemapper.py)
 #
 #  Puerto A = garra_principal  → recoge herramientas y cemento (frente)
@@ -262,9 +361,106 @@ class Robot:
         self.hub.imu.reset_heading(0)
         self.drive.reset()
 
-        self.mision_herramientas()
-        self.mision_cemento()
-        self.mision_baldosas()
+        # ── Secuencia exportada del Simulador WRO 2026 ──
+        self.pos_x, self.pos_y = 217, 236
+        self.goto((1062, 253))   # WP1
+        self.goto((1053, 105))   # WP2
+        self.goto((755, 109))    # WP3
+        self.goto((532, 114))    # P4
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((1300, 107))   # WP5
+        self.goto((1450, 210))   # WP6
+        self.goto((1590, 260))   # WP7
+        self.goto((1742, 384))   # P8
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((1746, 264))   # WP9
+        self.goto((1757, 97))    # WP10
+        self.goto((1433, 101))   # WP11
+        self.goto((180, 139))    # P12
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((174, 238))    # P13
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((1852, 260))   # WP14
+        self.goto((1864, 178))   # WP15
+        self.goto((2047, 182))   # WP16
+        self.goto((2255, 210))   # P17
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((2251, 305))   # WP18
+        self.goto((1993, 315))   # WP19
+        self.goto((2023, 547))   # WP20
+        self.goto((2015, 654))   # WP21
+        self.goto((1759, 669))   # WP22
+        self.goto((1669, 667))   # WP23
+        self.goto((1536, 680))   # WP24
+        self.goto((1463, 785))   # WP25
+        self.goto((1270, 1002))  # P26
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((1266, 845))   # WP27
+        self.goto((1875, 759))   # WP28
+        self.goto((2042, 775))   # WP29
+        self.goto((2036, 478))   # WP30
+        self.goto((2255, 485))   # P31
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((1939, 493))   # WP32
+        self.goto((1892, 596))   # WP33
+        self.goto((1884, 693))   # WP34
+        self.goto((1783, 704))   # WP35
+        self.goto((1708, 704))   # WP36
+        self.goto((1575, 729))   # P37
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((1577, 790))   # WP38
+        self.goto((1845, 815))   # WP39
+        self.goto((1849, 942))   # WP40
+        self.goto((1849, 1017))  # WP41
+        self.goto((2027, 995))   # WP42
+        self.goto((2094, 995))   # WP43
+        self.goto((2246, 995))   # P44
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((2248, 783))   # WP45
+        self.goto((2242, 599))   # P46
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((2242, 371))   # WP47
+        self.goto((2242, 245))   # WP48
+        self.goto((1292, 249))   # WP49
+        self.goto((1210, 247))   # WP50
+        self.goto((1210, 384))   # WP51
+        self.goto((1208, 255))   # WP52
+        self.goto((687, 251))    # WP53
+        self.goto((663, 352))    # WP54
+        self.goto((663, 459))    # WP55
+        self.goto((530, 457))    # WP56
+        self.goto((436, 455))    # WP57
+        self.goto((324, 466))    # P58
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
+        self.goto((493, 451))    # WP59
+        self.goto((626, 453))    # WP60
+        self.goto((672, 466))    # WP61
+        self.goto((680, 644))    # WP62
+        self.goto((860, 644))    # WP63
+        self.goto((980, 644))    # WP64
+        self.goto((1101, 657))   # WP65
+        self.goto((1208, 674))   # WP66
+        self.goto((599, 637))    # WP67
+        self.goto((472, 624))    # WP68
+        self.goto((382, 624))    # WP69
+        self.goto((326, 622))    # WP70
+        self.goto((1268, 697))   # WP71
+        self.goto((1219, 742))   # WP72
+        self.goto((1201, 798))   # WP73
+        self.goto((968, 798))    # WP74
+        self.goto((498, 807))    # WP75
+        self.goto((365, 807))    # WP76
+        self.goto((1193, 738))   # WP77
+        self.goto((1167, 845))   # WP78
+        self.goto((1045, 850))   # WP79
+        self.goto((599, 841))    # WP80
+        self.goto((453, 860))    # WP81
+        self.goto((369, 998))    # WP82
+        self.goto((657, 704))    # WP83
+        self.goto((1208, 684))   # WP84
+        self.goto((850, 710))    # WP85
+        self.goto((813, 729))    # P86
+        self.garra_frontal_agarrar()  # TODO: o _soltar()
 
         self.hub.light.on(Color.GREEN)
         self.hub.display.text("OK")

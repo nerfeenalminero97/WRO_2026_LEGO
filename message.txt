@@ -1,0 +1,203 @@
+# ══ Código exportado del Simulador WRO 2026 ══
+# Pega el bloque goto() en wro_secuencia2.py
+
+# Posiciones (X mm, Y mm)
+WP00 = (217, 236)  # [destino] P0
+WP01 = (1062, 253)  # [intermedio] WP1
+WP02 = (1053, 105)  # [intermedio] WP2
+WP03 = (755, 109)  # [intermedio] WP3
+WP04 = (532, 114)  # [destino] P4
+WP05 = (1300, 107)  # [intermedio] WP5
+WP06 = (1450, 210)  # [intermedio] WP6
+WP07 = (1590, 260)  # [intermedio] WP7
+WP08 = (1742, 384)  # [destino] P8
+WP09 = (1746, 264)  # [intermedio] WP9
+WP10 = (1757, 97)  # [intermedio] WP10
+WP11 = (1433, 101)  # [intermedio] WP11
+WP12 = (180, 139)  # [destino] P12
+WP13 = (174, 238)  # [destino] P13
+WP14 = (1852, 260)  # [intermedio] WP14
+WP15 = (1864, 178)  # [intermedio] WP15
+WP16 = (2047, 182)  # [intermedio] WP16
+WP17 = (2255, 210)  # [destino] P17
+WP18 = (2251, 305)  # [intermedio] WP18
+WP19 = (1993, 315)  # [intermedio] WP19
+WP20 = (2023, 547)  # [intermedio] WP20
+WP21 = (2015, 654)  # [intermedio] WP21
+WP22 = (1759, 669)  # [intermedio] WP22
+WP23 = (1669, 667)  # [intermedio] WP23
+WP24 = (1536, 680)  # [intermedio] WP24
+WP25 = (1463, 785)  # [intermedio] WP25
+WP26 = (1270, 1002)  # [destino] P26
+WP27 = (1266, 845)  # [intermedio] WP27
+WP28 = (1875, 759)  # [intermedio] WP28
+WP29 = (2042, 775)  # [intermedio] WP29
+WP30 = (2036, 478)  # [intermedio] WP30
+WP31 = (2255, 485)  # [destino] P31
+WP32 = (1939, 493)  # [intermedio] WP32
+WP33 = (1892, 596)  # [intermedio] WP33
+WP34 = (1884, 693)  # [intermedio] WP34
+WP35 = (1783, 704)  # [intermedio] WP35
+WP36 = (1708, 704)  # [intermedio] WP36
+WP37 = (1575, 729)  # [destino] P37
+WP38 = (1577, 790)  # [intermedio] WP38
+WP39 = (1845, 815)  # [intermedio] WP39
+WP40 = (1849, 942)  # [intermedio] WP40
+WP41 = (1849, 1017)  # [intermedio] WP41
+WP42 = (2027, 995)  # [intermedio] WP42
+WP43 = (2094, 995)  # [intermedio] WP43
+WP44 = (2246, 995)  # [destino] P44
+WP45 = (2248, 783)  # [intermedio] WP45
+WP46 = (2242, 599)  # [destino] P46
+WP47 = (2242, 371)  # [intermedio] WP47
+WP48 = (2242, 245)  # [intermedio] WP48
+WP49 = (1292, 249)  # [intermedio] WP49
+WP50 = (1210, 247)  # [intermedio] WP50
+WP51 = (1210, 384)  # [intermedio] WP51
+WP52 = (1208, 255)  # [intermedio] WP52
+WP53 = (687, 251)  # [intermedio] WP53
+WP54 = (663, 352)  # [intermedio] WP54
+WP55 = (663, 459)  # [intermedio] WP55
+WP56 = (530, 457)  # [intermedio] WP56
+WP57 = (436, 455)  # [intermedio] WP57
+WP58 = (324, 466)  # [destino] P58
+WP59 = (493, 451)  # [intermedio] WP59
+WP60 = (626, 453)  # [intermedio] WP60
+WP61 = (672, 466)  # [intermedio] WP61
+WP62 = (680, 644)  # [intermedio] WP62
+WP63 = (860, 644)  # [intermedio] WP63
+WP64 = (980, 644)  # [intermedio] WP64
+WP65 = (1101, 657)  # [intermedio] WP65
+WP66 = (1208, 674)  # [intermedio] WP66
+WP67 = (599, 637)  # [intermedio] WP67
+WP68 = (472, 624)  # [intermedio] WP68
+WP69 = (382, 624)  # [intermedio] WP69
+WP70 = (326, 622)  # [intermedio] WP70
+WP71 = (1268, 697)  # [intermedio] WP71
+WP72 = (1219, 742)  # [intermedio] WP72
+WP73 = (1201, 798)  # [intermedio] WP73
+WP74 = (968, 798)  # [intermedio] WP74
+WP75 = (498, 807)  # [intermedio] WP75
+WP76 = (365, 807)  # [intermedio] WP76
+WP77 = (1193, 738)  # [intermedio] WP77
+WP78 = (1167, 845)  # [intermedio] WP78
+WP79 = (1045, 850)  # [intermedio] WP79
+WP80 = (599, 841)  # [intermedio] WP80
+WP81 = (453, 860)  # [intermedio] WP81
+WP82 = (369, 998)  # [intermedio] WP82
+WP83 = (657, 704)  # [intermedio] WP83
+WP84 = (1208, 684)  # [intermedio] WP84
+WP85 = (850, 710)  # [intermedio] WP85
+WP86 = (813, 729)  # [destino] P86
+
+# ── Secuencia de movimiento ──
+# (pega dentro de run() en wro_secuencia2.py)
+
+# START: robot en (217, 236) — heading IMU = 0°
+self.pos_x, self.pos_y = 217, 236
+self.goto((1062, 253))  # [intermedio] WP1 — 845mm / -1.2°
+self.goto((1053, 105))  # [intermedio] WP2 — 148mm / 93.5°
+self.goto((755, 109))  # [intermedio] WP3 — 298mm / -179.2°
+self.goto((532, 114))  # [destino] P4 — 223mm / -178.7°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((1300, 107))  # [intermedio] WP5 — 768mm / 0.5°
+self.goto((1450, 210))  # [intermedio] WP6 — 182mm / -34.5°
+self.goto((1590, 260))  # [intermedio] WP7 — 149mm / -19.7°
+self.goto((1742, 384))  # [destino] P8 — 196mm / -39.2°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((1746, 264))  # [intermedio] WP9 — 120mm / 88.1°
+self.goto((1757, 97))  # [intermedio] WP10 — 167mm / 86.2°
+self.goto((1433, 101))  # [intermedio] WP11 — 324mm / -179.3°
+self.goto((180, 139))  # [destino] P12 — 1254mm / -178.3°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((174, 238))  # [destino] P13 — 99mm / -93.5°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((1852, 260))  # [intermedio] WP14 — 1678mm / -0.8°
+self.goto((1864, 178))  # [intermedio] WP15 — 83mm / 81.7°
+self.goto((2047, 182))  # [intermedio] WP16 — 183mm / -1.3°
+self.goto((2255, 210))  # [destino] P17 — 210mm / -7.7°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((2251, 305))  # [intermedio] WP18 — 95mm / -92.4°
+self.goto((1993, 315))  # [intermedio] WP19 — 258mm / -177.8°
+self.goto((2023, 547))  # [intermedio] WP20 — 234mm / -82.6°
+self.goto((2015, 654))  # [intermedio] WP21 — 107mm / -94.3°
+self.goto((1759, 669))  # [intermedio] WP22 — 256mm / -176.6°
+self.goto((1669, 667))  # [intermedio] WP23 — 90mm / 178.7°
+self.goto((1536, 680))  # [intermedio] WP24 — 134mm / -174.4°
+self.goto((1463, 785))  # [intermedio] WP25 — 128mm / -124.8°
+self.goto((1270, 1002))  # [destino] P26 — 290mm / -131.6°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((1266, 845))  # [intermedio] WP27 — 157mm / 91.5°
+self.goto((1875, 759))  # [intermedio] WP28 — 615mm / 8.0°
+self.goto((2042, 775))  # [intermedio] WP29 — 168mm / -5.5°
+self.goto((2036, 478))  # [intermedio] WP30 — 297mm / 91.2°
+self.goto((2255, 485))  # [destino] P31 — 219mm / -1.8°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((1939, 493))  # [intermedio] WP32 — 316mm / -178.5°
+self.goto((1892, 596))  # [intermedio] WP33 — 113mm / -114.5°
+self.goto((1884, 693))  # [intermedio] WP34 — 97mm / -94.7°
+self.goto((1783, 704))  # [intermedio] WP35 — 102mm / -173.8°
+self.goto((1708, 704))  # [intermedio] WP36 — 75mm / 180.0°
+self.goto((1575, 729))  # [destino] P37 — 135mm / -169.4°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((1577, 790))  # [intermedio] WP38 — 61mm / -88.1°
+self.goto((1845, 815))  # [intermedio] WP39 — 269mm / -5.3°
+self.goto((1849, 942))  # [intermedio] WP40 — 127mm / -88.2°
+self.goto((1849, 1017))  # [intermedio] WP41 — 75mm / -90.0°
+self.goto((2027, 995))  # [intermedio] WP42 — 179mm / 7.0°
+self.goto((2094, 995))  # [intermedio] WP43 — 67mm / 0.0°
+self.goto((2246, 995))  # [destino] P44 — 152mm / 0.0°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((2248, 783))  # [intermedio] WP45 — 212mm / 89.5°
+self.goto((2242, 599))  # [destino] P46 — 184mm / 91.9°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((2242, 371))  # [intermedio] WP47 — 228mm / 90.0°
+self.goto((2242, 245))  # [intermedio] WP48 — 126mm / 90.0°
+self.goto((1292, 249))  # [intermedio] WP49 — 950mm / -179.8°
+self.goto((1210, 247))  # [intermedio] WP50 — 82mm / 178.6°
+self.goto((1210, 384))  # [intermedio] WP51 — 137mm / -90.0°
+self.goto((1208, 255))  # [intermedio] WP52 — 129mm / 90.9°
+self.goto((687, 251))  # [intermedio] WP53 — 521mm / 179.6°
+self.goto((663, 352))  # [intermedio] WP54 — 104mm / -103.4°
+self.goto((663, 459))  # [intermedio] WP55 — 107mm / -90.0°
+self.goto((530, 457))  # [intermedio] WP56 — 133mm / 179.1°
+self.goto((436, 455))  # [intermedio] WP57 — 94mm / 178.8°
+self.goto((324, 466))  # [destino] P58 — 113mm / -174.4°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+self.goto((493, 451))  # [intermedio] WP59 — 170mm / 5.1°
+self.goto((626, 453))  # [intermedio] WP60 — 133mm / -0.9°
+self.goto((672, 466))  # [intermedio] WP61 — 48mm / -15.8°
+self.goto((680, 644))  # [intermedio] WP62 — 178mm / -87.4°
+self.goto((860, 644))  # [intermedio] WP63 — 180mm / 0.0°
+self.goto((980, 644))  # [intermedio] WP64 — 120mm / 0.0°
+self.goto((1101, 657))  # [intermedio] WP65 — 122mm / -6.1°
+self.goto((1208, 674))  # [intermedio] WP66 — 108mm / -9.0°
+self.goto((599, 637))  # [intermedio] WP67 — 610mm / 176.5°
+self.goto((472, 624))  # [intermedio] WP68 — 128mm / 174.2°
+self.goto((382, 624))  # [intermedio] WP69 — 90mm / 180.0°
+self.goto((326, 622))  # [intermedio] WP70 — 56mm / 178.0°
+self.goto((1268, 697))  # [intermedio] WP71 — 945mm / -4.6°
+self.goto((1219, 742))  # [intermedio] WP72 — 67mm / -137.4°
+self.goto((1201, 798))  # [intermedio] WP73 — 59mm / -107.8°
+self.goto((968, 798))  # [intermedio] WP74 — 233mm / 180.0°
+self.goto((498, 807))  # [intermedio] WP75 — 470mm / -178.9°
+self.goto((365, 807))  # [intermedio] WP76 — 133mm / 180.0°
+self.goto((1193, 738))  # [intermedio] WP77 — 831mm / 4.8°
+self.goto((1167, 845))  # [intermedio] WP78 — 110mm / -103.7°
+self.goto((1045, 850))  # [intermedio] WP79 — 122mm / -177.7°
+self.goto((599, 841))  # [intermedio] WP80 — 446mm / 178.8°
+self.goto((453, 860))  # [intermedio] WP81 — 147mm / -172.6°
+self.goto((369, 998))  # [intermedio] WP82 — 162mm / -121.3°
+self.goto((657, 704))  # [intermedio] WP83 — 412mm / 45.6°
+self.goto((1208, 684))  # [intermedio] WP84 — 551mm / 2.1°
+self.goto((850, 710))  # [intermedio] WP85 — 359mm / -175.8°
+self.goto((813, 729))  # [destino] P86 — 42mm / -152.8°
+self.garra_frontal_agarrar()  # TODO: o _soltar()
+
+# ── Zonas definidas por usuario ──
+ZONA_PARKING___ESTACIONAMIENTO = (1734, 384)  # Parking / Estacionamiento [1626,279→1843,489]
+ZONA_DIANA_BLANCO         = (1207, 996)  # Diana Blanco [935,933→1480,1060]
+ZONA_MARCO_DE_MOSAICO     = (1226, 688)  # Marco de Mosaico [1092,599→1360,777]
+ZONA_DIANA_VERDE          = (1556, 707)  # Diana Verde [1474,506→1639,908]
+ZONA_DIANA_AZUL           = (1213, 396)  # Diana Azul [948,324→1478,468]
+ZONA_DIANA_AMARILLO       = (849, 702)  # Diana Amarillo [764,476→935,929]
