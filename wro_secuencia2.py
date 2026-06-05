@@ -13,7 +13,7 @@
 #   A = Motor Garra Principal
 #   B = Sensor de Color
 
-import math
+import umath as math
 from pybricks.hubs import PrimeHub
 from pybricks.pupdevices import Motor, ColorSensor
 from pybricks.parameters import Port, Direction, Color, Button
@@ -45,8 +45,11 @@ TILE_AZUL  = (330,  610)
 TILE_VERDE = (330,  760)
 TILE_BLANC = (330,  910)
 
-# Obstáculos (centros, radio ≈65mm — las rutas actuales los evitan)
-# OBS_1=(860, 400)  OBS_2=(860,1010)  OBS_3=(1560,400)  OBS_4=(1560,1010)
+# Obstáculos (centros, mm) y distancia de seguridad para el robot 230×210mm
+OBSTACLES  = [(860, 400), (860, 1010), (1560, 400), (1560, 1010)]
+OBS_RADIO  = 65    # radio físico del obstáculo (mm)
+ROBOT_HALF = 115   # mitad del ancho del robot: 230/2 mm
+SAFE_DIST  = OBS_RADIO + ROBOT_HALF + 20   # 200 mm — margen total
 
 # ════════════════════════════════════════════════════════════════════════
 #  WAYPOINTS — exportados del Simulador WRO 2026
@@ -172,6 +175,16 @@ G_CONTRAER        = 0    # TODO: grados para contraer
 RETROCESO_MM = 120   # mm que retrocede tras soltar un objeto
 
 
+def _pt_seg_dist(px, py, ax, ay, bx, by):
+    """Distancia mínima del punto (px,py) al segmento (ax,ay)-(bx,by), en mm."""
+    dx, dy = bx - ax, by - ay
+    len2 = dx * dx + dy * dy
+    if len2 == 0:
+        return math.sqrt((px - ax) ** 2 + (py - ay) ** 2)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2))
+    return math.sqrt((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2)
+
+
 # ════════════════════════════════════════════════════════════════════════
 #  ROBOT
 # ════════════════════════════════════════════════════════════════════════
@@ -185,6 +198,10 @@ class Robot:
         self.expandir_garra  = Motor(Port.C)   # expansión garra trasera
         self.sensor          = ColorSensor(Port.B)
         self.drive           = DriveBase(self.left, self.right, wheel_diameter=86, axle_track=120)
+        # Reducir aceleración para evitar sobreimpulso (robot "más adelantado")
+        # Ajustar straight_speed si el robot sigue llegando demasiado lejos
+        self.drive.settings(straight_speed=250, straight_acceleration=150,
+                            turn_rate=200,       turn_acceleration=150)
 
         self.sensor.detectable_colors(
             [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE, Color.WHITE]
@@ -199,12 +216,23 @@ class Robot:
 
     # ── Navegación ────────────────────────────────────────────────────────────
 
-    def goto(self, target):
+    def goto(self, target, _depth=0):
         """
-        Navega en línea recta desde la posición actual hasta target=(X,Y).
-        Calcula el heading y la distancia automáticamente.
+        Navega hasta target=(X,Y) esquivando obstáculos automáticamente.
+        Si la línea recta pasa a menos de SAFE_DIST de un obstáculo,
+        calcula un punto de desvío y lo visita primero.
         """
         tx, ty = target
+        if _depth < 4:
+            for obs in OBSTACLES:
+                ox, oy = obs
+                if _pt_seg_dist(ox, oy, self.pos_x, self.pos_y, tx, ty) < SAFE_DIST:
+                    bp = self._bypass(self.pos_x, self.pos_y, tx, ty, ox, oy)
+                    if bp:
+                        self.goto(bp, _depth + 1)
+                        self.goto(target, _depth + 1)
+                        return
+        # Camino libre — ir directo
         dx = tx - self.pos_x
         dy = ty - self.pos_y
         dist = math.sqrt(dx * dx + dy * dy)
@@ -213,6 +241,32 @@ class Robot:
         heading_target = math.degrees(math.atan2(-dy, dx))
         self._ir_a(heading_target, round(dist))
         self.pos_x, self.pos_y = tx, ty
+
+    def _bypass(self, ax, ay, bx, by, ox, oy):
+        """
+        Calcula el punto de desvío alrededor del obstáculo (ox,oy)
+        en el camino A→B. Elige el lado que minimiza la distancia total
+        y que quede dentro de los límites del campo.
+        """
+        dx, dy = bx - ax, by - ay
+        length = math.sqrt(dx * dx + dy * dy)
+        if length < 1:
+            return None
+        # Perpendicular unitaria al camino
+        nx, ny = -dy / length, dx / length
+        margin = SAFE_DIST + 30   # margen adicional de seguridad
+        best, best_cost = None, 999999999
+        for side in (1, -1):
+            wpx = ox + nx * side * margin
+            wpy = oy + ny * side * margin
+            # El waypoint debe estar dentro del campo (bordes de 80mm)
+            if 80 <= wpx <= 2420 and 80 <= wpy <= 1020:
+                cost = (math.sqrt((wpx - ax) ** 2 + (wpy - ay) ** 2) +
+                        math.sqrt((bx - wpx) ** 2 + (by - wpy) ** 2))
+                if cost < best_cost:
+                    best_cost = cost
+                    best = (wpx, wpy)
+        return best
 
     def _ir_a(self, heading_abs, dist_mm):
         """Gira al heading absoluto y avanza dist_mm en línea recta."""

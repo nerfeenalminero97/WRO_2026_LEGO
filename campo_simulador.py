@@ -57,8 +57,11 @@ USER_ZONE_TYPES = [
     ("Diana Amarillo",            "#FFF9C4", "#F57F17"),
 ]
 
-# Barreras (obstáculos)
-BARRIERS = [(860, 400), (860, 1010), (1560, 400), (1560, 1010)]
+# Barreras (obstáculos) y distancia de seguridad para robot 230×210mm
+BARRIERS   = [(860, 400), (860, 1010), (1560, 400), (1560, 1010)]
+OBS_RADIO  = 65     # radio físico del obstáculo (mm)
+ROBOT_HALF = 115    # mitad del ancho del robot: 230/2 mm
+SAFE_DIST  = OBS_RADIO + ROBOT_HALF + 20   # 200 mm — margen total
 
 # ════════════════════════════════════════════════════════════════════════
 #  CONVERSIÓN mm ↔ px
@@ -74,6 +77,20 @@ def leg_info(ax, ay, bx, by):
     dist = math.sqrt(dx*dx + dy*dy)
     heading = math.degrees(math.atan2(-dy, dx)) if dist > 0 else 0
     return round(heading, 1), round(dist)
+
+def _pt_seg_dist(px, py, ax, ay, bx, by):
+    """Distancia mínima del punto (px,py) al segmento (ax,ay)-(bx,by) en mm."""
+    dx, dy = bx - ax, by - ay
+    len2 = dx*dx + dy*dy
+    if len2 == 0:
+        return math.sqrt((px-ax)**2 + (py-ay)**2)
+    t = max(0.0, min(1.0, ((px-ax)*dx + (py-ay)*dy) / len2))
+    return math.sqrt((px-ax-t*dx)**2 + (py-ay-t*dy)**2)
+
+def seg_is_safe(ax, ay, bx, by):
+    """True si el segmento A→B pasa a >SAFE_DIST de todos los obstáculos."""
+    return all(_pt_seg_dist(ox, oy, ax, ay, bx, by) >= SAFE_DIST
+               for (ox, oy) in BARRIERS)
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -197,9 +214,10 @@ class Simulador(tk.Tk):
 
     def _update_instruc(self):
         if self.mode.get() == "ruta":
-            txt = ("  MODO RUTA — Click izquierdo: agregar punto  |  "
+            txt = ("  MODO RUTA — Click: agregar punto  |  "
+                   "Shift+Click: línea recta H o V  |  "
                    "Click derecho: borrar último  |  "
-                   "Cambia entre Destino / Intermedio en la barra de arriba")
+                   "Verde = ruta libre · Rojo = demasiado cerca del obstáculo")
         else:
             txt = ("  MODO ZONA — Selecciona la zona en el menú, "
                    "luego ARRASTRA sobre el campo para dibujarla  |  "
@@ -208,9 +226,20 @@ class Simulador(tk.Tk):
 
     # ── Eventos de canvas ─────────────────────────────────────────────────
 
+    def _snap(self, x, y, lx, ly):
+        """Snappea al eje X o Y según cuál esté más cerca del cursor."""
+        dx, dy = x - lx, y - ly
+        if abs(dx) >= abs(dy):
+            return x, ly   # eje horizontal — mismo Y que el punto anterior
+        else:
+            return lx, y   # eje vertical   — mismo X que el punto anterior
+
     def _on_click(self, e):
         if self.mode.get() == "ruta":
+            shift = bool(e.state & 0x0001)
             x, y = px_to_mm(e.x, e.y)
+            if shift and self.waypoints:
+                x, y = self._snap(x, y, *self.waypoints[-1][:2])
             if 0 <= x <= FIELD_W and 0 <= y <= FIELD_H:
                 tipo = self.wp_type.get()
                 n = len(self.waypoints)
@@ -271,8 +300,43 @@ class Simulador(tk.Tk):
             self._redraw()
 
     def _on_hover(self, e):
+        shift = bool(e.state & 0x0001)
         x, y = px_to_mm(e.x, e.y)
-        self.lbl_xy.config(text=f"   X = {x:5d} mm   Y = {y:5d} mm")
+
+        snap_tag = ""
+        if shift and self.waypoints and self.mode.get() == "ruta":
+            lx, ly = self.waypoints[-1][:2]
+            x, y = self._snap(x, y, lx, ly)
+            axis = "→ H" if y == ly else "↑ V"
+            snap_tag = f"   ⇩ SNAP {axis}"
+
+        self.lbl_xy.config(
+            text=f"   X = {x:5d} mm   Y = {y:5d} mm{snap_tag}"
+        )
+
+        # Preview line desde el último waypoint hasta el cursor
+        self.canvas.delete("preview")
+        if self.mode.get() == "ruta" and self.waypoints:
+            lx, ly = self.waypoints[-1][:2]
+            plx, ply = mm_to_px(lx, ly)
+            pcx, pcy = mm_to_px(x, y)
+            safe = seg_is_safe(lx, ly, x, y)
+            color = "#43A047" if safe else "#E53935"
+            self.canvas.create_line(
+                plx, ply, pcx, pcy,
+                fill=color, width=2, dash=(6, 4),
+                arrow=tk.LAST, arrowshape=(10, 12, 4),
+                tags="preview"
+            )
+            # Mini etiqueta de distancia en la línea de preview
+            dx, dy = x - lx, y - ly
+            d = round(math.sqrt(dx*dx + dy*dy))
+            mx, my = (plx+pcx)/2, (ply+pcy)/2
+            self.canvas.create_text(
+                mx, my - 9,
+                text=f"{d}mm", font=("Helvetica", 7, "bold"),
+                fill=color, tags="preview"
+            )
 
     # ── Dibujo ────────────────────────────────────────────────────────────
 
@@ -311,11 +375,19 @@ class Simulador(tk.Tk):
                                      text=f"({x2},{y2})", font=("Helvetica", 6),
                                      fill="#880E4F", anchor=tk.NE)
 
-        # Barreras
-        BR = 65 * SCALE
+        # Barreras — círculo exterior = zona de seguridad del robot (200mm)
+        BR_obs  = OBS_RADIO * SCALE
+        BR_safe = SAFE_DIST  * SCALE
         for (bx, by) in BARRIERS:
             px, py = mm_to_px(bx, by)
-            self.canvas.create_oval(px-BR, py-BR, px+BR, py+BR,
+            # Zona de seguridad (anillo exterior naranja punteado)
+            self.canvas.create_oval(px-BR_safe, py-BR_safe,
+                                     px+BR_safe, py+BR_safe,
+                                     fill="", outline="#FF6F00",
+                                     width=1, dash=(4, 3))
+            # Obstáculo físico
+            self.canvas.create_oval(px-BR_obs, py-BR_obs,
+                                     px+BR_obs, py+BR_obs,
                                      fill="#EF9A9A", outline="#B71C1C",
                                      width=2, stipple="gray50")
             self.canvas.create_text(px, py, text="⛔", font=("Helvetica", 9))
@@ -346,23 +418,30 @@ class Simulador(tk.Tk):
         if not wps:
             return
 
-        # Líneas de ruta (polilinea quebrada)
+        # Líneas de ruta — verde=libre, rojo=demasiado cerca de obstáculo
         for i in range(len(wps) - 1):
             ax, ay, al, at = wps[i]
             bx, by, bl, bt = wps[i+1]
             pax, pay = mm_to_px(ax, ay)
             pbx, pby = mm_to_px(bx, by)
-            color = "#E91E63"
+            safe = seg_is_safe(ax, ay, bx, by)
+            color     = "#2E7D32" if safe else "#C62828"
+            lbl_color = "#1B5E20" if safe else "#B71C1C"
             self.canvas.create_line(pax, pay, pbx, pby,
                                      fill=color, width=2,
                                      arrow=tk.LAST, arrowshape=(10, 12, 4))
-            # Etiqueta del tramo
             h, d = leg_info(ax, ay, bx, by)
             mx, my = (pax+pbx)/2, (pay+pby)/2
             self.canvas.create_text(mx, my - 8,
                                      text=f"{d}mm / {h}°",
                                      font=("Helvetica", 7, "bold"),
-                                     fill="#880E4F")
+                                     fill=lbl_color)
+            # Indicador de peligro
+            if not safe:
+                self.canvas.create_text(mx, my + 6,
+                                         text="⚠ OBSTÁCULO",
+                                         font=("Helvetica", 6, "bold"),
+                                         fill="#FF1744")
 
         # Puntos de waypoint
         for i, (wx, wy, wlbl, wtyp) in enumerate(wps):
