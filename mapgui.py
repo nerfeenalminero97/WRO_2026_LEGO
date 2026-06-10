@@ -25,8 +25,9 @@ PYBRICKS_MFR_ID = 0x0397
 TX_CHANNEL = 1
 RX_CHANNEL = 0
 TYPE_INT   = 3
-TURN_RATE  = 200
-MOTOR_SPD  = 300
+TURN_RATE    = 200
+MOTOR_SPD    = 300
+WHEEL_CIRC_MM = math.pi * 86.0  # mm por rotación de rueda
 
 def _enc(v: int) -> bytes:
     v = int(v)
@@ -270,6 +271,11 @@ class WROApp:
         self._mheld     = 0
         self._mdir      = 0
         self.spd        = tk.IntVar(value=300)
+        self._rotaciones  = tk.DoubleVar(value=1.0)
+        self._moving        = False
+        self._turning       = False
+        self._stop_move     = threading.Event()
+        self._replay_speed  = tk.DoubleVar(value=1.0)
 
         # Mapa
         self._map_img_orig  = None
@@ -403,8 +409,11 @@ class WROApp:
         self.b_back=tk.Button(pad,text="▼",**bkw); self.b_back.grid(row=2,column=1,padx=2,pady=2)
         tk.Label(pad,bg=BG,width=4,height=2).grid(row=2,column=2,padx=2,pady=2)
 
-        for btn, act in [(self.b_fwd,"fwd"),(self.b_back,"back"),
-                         (self.b_left,"left"),(self.b_right,"right")]:
+        # Fwd/Back: click para ejecutar rotaciones exactas (no hold)
+        self.b_fwd.config(command=lambda: self._execute_move(1))
+        self.b_back.config(command=lambda: self._execute_move(-1))
+        # Left/Right: hold continuo (solo para control manual)
+        for btn, act in [(self.b_left,"left"),(self.b_right,"right")]:
             btn.bind("<ButtonPress-1>",   lambda e,a=act: self._bp(a))
             btn.bind("<ButtonRelease-1>", lambda e: self._br())
 
@@ -413,6 +422,16 @@ class WROApp:
         tk.Scale(sf,variable=self.spd,from_=50,to=600,orient="horizontal",
                  bg=BG,fg=TEXT,troughcolor="#2A2A2A",highlightthickness=0,
                  sliderrelief="flat",activebackground=CYAN,length=160).pack(side="right")
+
+        rrow = tk.Frame(inn,bg=BG); rrow.pack(fill="x",padx=8,pady=2)
+        tk.Label(rrow,text="Rotaciones ▲▼:",bg=BG,fg=AMB,font=("Helvetica",9)).pack(side="left")
+        tk.Spinbox(rrow,textvariable=self._rotaciones,from_=0.1,to=20.0,increment=0.1,
+                   format="%.1f",width=6,bg=CARD,fg=AMB,buttonbackground=CARD,
+                   relief="flat",font=("Helvetica",10,"bold")).pack(side="right")
+
+        tk.Label(inn,text="WASD/◀▶: manual (sin grabar) | ▲▼: rotaciones exactas",
+                 bg=BG,fg=DIM,font=("Helvetica",7,"italic"),wraplength=240,justify="left"
+                 ).pack(anchor="w",padx=8,pady=(0,2))
 
         self.cmd_lbl = tk.Label(inn,text="spd=0  trn=0",bg=BG,fg=DIM,font=("Courier",8))
         self.cmd_lbl.pack()
@@ -489,6 +508,7 @@ class WROApp:
         lbl("GIROS PRECISOS (ejecutados en el hub)")
         trow1 = tk.Frame(inn,bg=BG); trow1.pack(padx=8,pady=2)
         trow2 = tk.Frame(inn,bg=BG); trow2.pack(padx=8,pady=2)
+        trow3 = tk.Frame(inn,bg=BG); trow3.pack(padx=8,pady=2)
 
         tkw = dict(width=5,height=2,relief="flat",cursor="hand2",
                    font=("Helvetica",12),bg=CARD,fg=CYAN,
@@ -504,6 +524,11 @@ class WROApp:
         for deg in [-180, 180]:
             label = f"↺180°" if deg < 0 else f"↻180°"
             tk.Button(trow2, text=label, **tkw,
+                      command=lambda d=deg: self._do_turn(d)).pack(side="left",padx=3)
+
+        for deg in [-15, 15]:
+            label = f"↺15°" if deg < 0 else f"↻15°"
+            tk.Button(trow3, text=label, **tkw,
                       command=lambda d=deg: self._do_turn(d)).pack(side="left",padx=3)
 
         self.turn_lbl = tk.Label(inn,text="",bg=BG,fg=CYAN,font=("Courier",8))
@@ -610,6 +635,18 @@ class WROApp:
         self._rec_lbl = tk.Label(rec_row2, text="Sin grabación", bg=BG, fg=DIM,
                                  font=("Courier", 8))
         self._rec_lbl.pack(side="left", padx=8)
+
+        spd_row = tk.Frame(inn, bg=BG); spd_row.pack(fill="x", padx=8, pady=(0,4))
+        tk.Label(spd_row, text="Vel. replay:", bg=BG, fg=DIM,
+                 font=("Helvetica",8)).pack(side="left")
+        om = tk.OptionMenu(spd_row, self._replay_speed, 1.0, 1.5, 2.0, 3.0, 5.0)
+        om.config(bg=CARD, fg=GRN, activebackground="#2A4A2A", activeforeground=GRN,
+                  relief="flat", font=("Helvetica",9), width=4,
+                  highlightthickness=0)
+        om["menu"].config(bg=CARD, fg=GRN, activebackground="#2A4A2A")
+        om.pack(side="left", padx=6)
+        tk.Label(spd_row, text="(comprime tiempos muertos)", bg=BG, fg=DIM,
+                 font=("Helvetica",7,"italic")).pack(side="left")
 
         sep()
 
@@ -990,10 +1027,14 @@ class WROApp:
         self._btn=None
 
     def _estop(self):
+        self._stop_move.set()
+        self._turning = False
+        self._moving  = False
         self._btn=None; self._keys.clear()
         self._mheld=0; self._mdir=0
         self._pub.send(0,0,0,0,0)
         self.cmd_lbl.config(text="spd=0  trn=0")
+        self.turn_lbl.config(text="")
 
     def _mpress(self, mid, direction):
         self._mheld=mid; self._mdir=direction
@@ -1002,19 +1043,86 @@ class WROApp:
         self._mheld=0; self._mdir=0
 
     # ─────────────────────────────────────────────────────────────
+    #  MOVIMIENTO POR ROTACIONES EXACTAS
+    # ─────────────────────────────────────────────────────────────
+    def _execute_move(self, direction: int):
+        """Mueve exactamente N rotaciones.
+        Si el hub está mandando datos usa closed-loop (dist_mm real).
+        Si no hay señal, cae a time-based con compensación de inercia.
+        """
+        if self._moving:
+            return
+        self._moving = True   # bloquear re-entrada ANTES de arrancar el thread
+        rotations = self._rotaciones.get()
+        target_mm = rotations * WHEEL_CIRC_MM
+        dist_mm   = int(target_mm) * direction
+        # wait_s es solo un buffer de seguridad; la precisión la maneja el hub con drive.straight()
+        wait_s    = target_mm / self.spd.get() * 2.5
+
+        def run():
+            self._stop_move.clear()
+
+            t_start_ms = int((time.monotonic() - self._record_t0) * 1000) if self._recording else 0
+
+            # mc=4 → hub ejecuta drive.straight(motor_val)
+            self._pub.send(0, 0, 4, dist_mm, 0)
+            if self._recording:
+                self._input_log.append({"t_ms": t_start_ms, "speed": 0, "turn": 0, "mc": 4, "mv": dist_mm, "tc": 0})
+                self.root.after(0, lambda n=len(self._input_log):
+                    self._rec_lbl.config(text=f"● REC  {n} cmds", fg=RED))
+            self.root.after(0, lambda: self.cmd_lbl.config(text=f"straight={dist_mm:+d}mm"))
+
+            # Esperar que el hub termine (con buffer)
+            self._stop_move.wait(timeout=wait_s)
+
+            self._pub.send(0, 0, 0, 0, 0)
+            if self._recording:
+                t_stop_ms = int((time.monotonic() - self._record_t0) * 1000)
+                self._input_log.append({"t_ms": t_stop_ms, "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": 0})
+                self.root.after(0, lambda n=len(self._input_log):
+                    self._rec_lbl.config(text=f"● REC  {n} cmds", fg=RED))
+
+            self._moving = False
+            self.root.after(0, lambda: self.cmd_lbl.config(text="spd=0  trn=   0"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ─────────────────────────────────────────────────────────────
     #  GIRO PRECISO
     # ─────────────────────────────────────────────────────────────
     def _do_turn(self, degrees: int):
-        if self._recording:
-            t_ms = int((time.monotonic() - self._record_t0) * 1000)
-            self._input_log.append({"t_ms": t_ms,       "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": degrees})
-            self._input_log.append({"t_ms": t_ms + 500, "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": 0})
-            self._rec_lbl.config(text=f"● REC  {len(self._input_log)} cmds", fg=RED)
-        self._pub.send(0, 0, 0, 0, degrees)
+        if self._turning or self._moving:
+            return
+        self._turning = True   # bloquear re-entrada antes del thread
+
         sign = "↺" if degrees < 0 else "↻"
         self.turn_lbl.config(text=f"Girando {sign} {abs(degrees)}°...", fg=CYAN)
-        self.root.after(500, lambda: self._pub.send(0, 0, 0, 0, 0))
-        self.root.after(2000, lambda: self.turn_lbl.config(text=""))
+
+        # Buffer generoso: ~200°/s típico del DriveBase con aceleración
+        wait_s = abs(degrees) / 200.0 * 2.0
+
+        def run():
+            t_start_ms = int((time.monotonic() - self._record_t0) * 1000) if self._recording else 0
+
+            self._pub.send(0, 0, 0, 0, degrees)
+            if self._recording:
+                self._input_log.append({"t_ms": t_start_ms, "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": degrees})
+                self.root.after(0, lambda n=len(self._input_log):
+                    self._rec_lbl.config(text=f"● REC  {n} cmds", fg=RED))
+
+            time.sleep(wait_s)
+
+            self._pub.send(0, 0, 0, 0, 0)
+            if self._recording:
+                t_stop_ms = int((time.monotonic() - self._record_t0) * 1000)
+                self._input_log.append({"t_ms": t_stop_ms, "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": 0})
+                self.root.after(0, lambda n=len(self._input_log):
+                    self._rec_lbl.config(text=f"● REC  {n} cmds", fg=RED))
+
+            self._turning = False
+            self.root.after(0, lambda: self.turn_lbl.config(text=""))
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ─────────────────────────────────────────────────────────────
     #  GRABACIÓN / REPLAY
@@ -1027,6 +1135,12 @@ class WROApp:
 
     def _stop_recording(self):
         self._recording = False
+        # Append an explicit stop if the last recorded command was still moving
+        if self._input_log and (
+            self._input_log[-1]["speed"] != 0 or self._input_log[-1]["turn"] != 0
+        ):
+            t_ms = int((time.monotonic() - self._record_t0) * 1000)
+            self._input_log.append({"t_ms": t_ms, "speed": 0, "turn": 0, "mc": 0, "mv": 0, "tc": 0})
         n = len(self._input_log)
         self._rec_lbl.config(text=f"Grabado: {n} cmds", fg=GRN if n else DIM)
 
@@ -1038,25 +1152,35 @@ class WROApp:
     def _start_replay(self):
         if not self._input_log:
             return
-        self._rec_lbl.config(text="▶ Replay...", fg=CYAN)
-        for entry in self._input_log:
-            self.root.after(
-                entry["t_ms"],
-                lambda e=entry: self._pub.send(e["speed"], e["turn"], e["mc"], e["mv"], e["tc"])
-            )
-        last_t = self._input_log[-1]["t_ms"]
-        self.root.after(last_t + 300, lambda: self._pub.send(0, 0, 0, 0, 0))
-        self.root.after(last_t + 400, lambda: self._rec_lbl.config(text="Replay listo", fg=GRN))
+        speed = self._replay_speed.get()
+        self._rec_lbl.config(text=f"▶ Replay {speed}x...", fg=CYAN)
+        log = list(self._input_log)
+
+        def run():
+            t0 = time.monotonic()
+            for entry in log:
+                target = t0 + entry["t_ms"] / 1000.0 / speed
+                wait_s = target - time.monotonic()
+                if wait_s > 0:
+                    time.sleep(wait_s)
+                self._pub.send(entry["speed"], entry["turn"], entry["mc"], entry["mv"], entry["tc"])
+            time.sleep(0.3)
+            self._pub.send(0, 0, 0, 0, 0)
+            self.root.after(0, lambda: self._rec_lbl.config(text="Replay listo", fg=GRN))
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ─────────────────────────────────────────────────────────────
     #  LOOP DE CONTROL (50ms)
     # ─────────────────────────────────────────────────────────────
     def _cmd_loop(self):
         k=self._keys; b=self._btn; s=self.spd.get()
-        fwd  ="w" in k or "up"    in k or b=="fwd"
-        back ="s" in k or "down"  in k or b=="back"
-        left ="a" in k or "left"  in k or b=="left"
-        right="d" in k or "right" in k or b=="right"
+        # Fwd/back/turns bloqueados durante grabación, move o giro activo
+        manual = not self._recording and not self._moving and not self._turning
+        fwd  = ("w" in k or "up"   in k) and manual
+        back = ("s" in k or "down" in k) and manual
+        left = ("a" in k or "left"  in k or b=="left")  and not self._turning
+        right= ("d" in k or "right" in k or b=="right") and not self._turning
         spd = s if fwd else (-s if back else 0)
         trn = -TURN_RATE if right else (TURN_RATE if left else 0)
         mc  = self._mheld
