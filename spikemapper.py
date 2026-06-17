@@ -3,17 +3,18 @@
 # Puertos:
 #   F = Rueda Derecha
 #   D = Rueda Izquierda  (COUNTERCLOCKWISE)
-#   A = Motor Garra Principal
-#   E = Motor Agarrar Bloques
-#   C = Motor Expandir Garra
-#   B = Sensor de Color
+#   A = Motor Subir Bloque
+#   B = Motor Garra Principal
+#   C = Sensor Centro
+#   E = Sensor Derecho
 #
 # Canal BLE 0 → ENVÍA  (dist_mm, heading_deg, r, g, b)
 # Canal BLE 1 → RECIBE (speed, turn, motor_cmd, motor_val, turn_cmd)
 #
 # motor_cmd:
 #   0        = nada
-#   1,2,3    = motores extra (garra, agarrar, expandir)
+#   1        = motor extra (garra)
+#   2        = motor extra (subir bloque)
 #   4        = drive.straight(motor_val mm)  ← preciso, encoder-based
 #
 # turn_cmd: 0=nada, +N=girar N° derecha, -N=girar N° izquierda
@@ -30,16 +31,15 @@ class Robot:
         self.hub   = PrimeHub(observe_channels=[1], broadcast_channel=0)
         self.right = Motor(Port.F)
         self.left  = Motor(Port.D, Direction.COUNTERCLOCKWISE)
-        self.garra_principal = Motor(Port.A)
-        self.agarrar_bloques = Motor(Port.E)
-        self.expandir_garra  = Motor(Port.C)
-        self.sensor = ColorSensor(Port.B)
+        self.subir_bloque    = Motor(Port.A)
+        self.garra_principal = Motor(Port.B)
+        self.sensor_centro = ColorSensor(Port.C)
+        self.sensor_der    = ColorSensor(Port.E)
         self.drive  = DriveBase(self.left, self.right, wheel_diameter=86, axle_track=120)
 
         self.motor_map = {
             1: self.garra_principal,
-            2: self.agarrar_bloques,
-            3: self.expandir_garra,
+            2: self.subir_bloque,
         }
 
         self.COLOR_RGB = {
@@ -51,16 +51,24 @@ class Robot:
             Color.NONE:   ( 40,  40,  40),
         }
 
-        self.sensor.detectable_colors(
-            [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE, Color.WHITE]
+        for s in (self.sensor_centro, self.sensor_der):
+            s.detectable_colors(
+                [Color.RED, Color.YELLOW, Color.GREEN, Color.BLUE, Color.WHITE]
+            )
+        self.drive.settings(
+            straight_speed=300,
+            straight_acceleration=600,
+            turn_rate=200,
+            turn_acceleration=400,
         )
         self.drive.reset()
         self.hub.imu.reset_heading(0)
         self.hub.light.on(Color.GREEN)
 
     def imu_turn(self, degrees):
-        """Giro preciso usando el IMU — no depende de axle_track ni de patinaje de ruedas."""
+        """Giro preciso usando el IMU — ambas ruedas coordinadas vía DriveBase."""
         target = self.hub.imu.heading() + degrees
+        prev_error = 0
 
         while True:
             error = target - self.hub.imu.heading()
@@ -72,18 +80,20 @@ class Robot:
             if abs(error) < 2:
                 break
 
-            # Control proporcional: rápido lejos, lento cerca
-            turn_rate = max(-300, min(300, error * 2.5))
+            # Control PD: P rápido lejos, D amortigua oscilación cerca del target
+            d_err = error - prev_error
+            turn_rate = max(-300, min(300, error * 3.0 + d_err * 1.5))
             self.drive.drive(0, turn_rate)
+            prev_error = error
             wait(10)
 
-        self.drive.stop()
+        self.drive.brake()
 
     def broadcast_state(self):
         dist_mm = int(self.drive.distance())
         heading = int(self.hub.imu.heading()) % 360
         try:
-            r, g, b = self.COLOR_RGB.get(self.sensor.color(), (0, 0, 0))
+            r, g, b = self.COLOR_RGB.get(self.sensor_centro.color(), (0, 0, 0))
         except Exception:
             r, g, b = 0, 0, 0
         self.hub.ble.broadcast((dist_mm, heading, r, g, b))
@@ -91,11 +101,13 @@ class Robot:
     def run(self):
         prev_motor_cmd = 0
         prev_turn_cmd  = 0
+        no_cmd_ticks   = 0   # paquetes BLE consecutivos sin recibir
 
         while True:
             cmd = self.hub.ble.observe(1)
 
             if cmd is not None and len(cmd) >= 5:
+                no_cmd_ticks = 0
                 speed     = int(cmd[0])
                 turn      = int(cmd[1])
                 motor_cmd = int(cmd[2])
@@ -115,7 +127,7 @@ class Robot:
                     self.hub.light.on(Color.GREEN)
 
                 elif motor_cmd != 4 and turn_cmd == 0:
-                    # Manejo continuo normal
+                    # Manejo continuo — DriveBase coordina ambas ruedas
                     self.drive.drive(speed, turn)
 
                     if motor_cmd in self.motor_map:
@@ -129,11 +141,15 @@ class Robot:
                 prev_turn_cmd  = turn_cmd
 
             else:
-                self.drive.stop()
-                for m in self.motor_map.values():
-                    m.brake()
-                prev_motor_cmd = 0
-                prev_turn_cmd  = 0
+                # Tolerar hasta 3 paquetes perdidos (≈150 ms) antes de frenar.
+                # Esto evita paradas bruscas durante la transición del publicador BLE.
+                no_cmd_ticks += 1
+                if no_cmd_ticks >= 3:
+                    self.drive.brake()
+                    for m in self.motor_map.values():
+                        m.brake()
+                    prev_motor_cmd = 0
+                    prev_turn_cmd  = 0
 
             self.broadcast_state()
             wait(50)

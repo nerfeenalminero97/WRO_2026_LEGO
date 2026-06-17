@@ -536,11 +536,39 @@ class WROApp:
 
         sep()
 
+        # ── ALINEAR A EJE ─────────────────────────────────────────
+        lbl("ALINEAR A EJE  (corrección tras golpe)")
+        tk.Label(inn,
+            text="Si el robot fue desviado por un obstáculo,\nvuelve al eje deseado con un giro preciso.",
+            bg=BG, fg=DIM, font=("Helvetica",7,"italic"),
+            justify="left", wraplength=240).pack(anchor="w", padx=10, pady=(0,4))
+
+        axrow1 = tk.Frame(inn,bg=BG); axrow1.pack(fill="x",padx=8,pady=1)
+        _akw = dict(width=5,height=2,relief="flat",cursor="hand2",font=("Helvetica",10),
+                    bg=CARD,fg=GRN,activebackground="#1A3A1A",activeforeground="#FFF")
+        tk.Button(axrow1,text="↑ 0°",  **_akw,
+                  command=lambda:self._align_to_axis(0)  ).pack(side="left",padx=2)
+        tk.Button(axrow1,text="→ 90°", **_akw,
+                  command=lambda:self._align_to_axis(90) ).pack(side="left",padx=2)
+        tk.Button(axrow1,text="↓ 180°",**_akw,
+                  command=lambda:self._align_to_axis(180)).pack(side="left",padx=2)
+        tk.Button(axrow1,text="← 270°",**_akw,
+                  command=lambda:self._align_to_axis(270)).pack(side="left",padx=2)
+
+        axrow2 = tk.Frame(inn,bg=BG); axrow2.pack(fill="x",padx=8,pady=(2,6))
+        tk.Button(axrow2,text="⊙  Auto — eje más cercano",
+                  relief="flat",cursor="hand2",font=("Helvetica",9),
+                  bg="#1A3A1A",fg=GRN,activebackground="#2A4A2A",
+                  activeforeground="#FFF",pady=5,
+                  command=self._align_nearest_axis).pack(fill="x")
+
+        sep()
+
         # ── MOTORES EXTRA ─────────────────────────────────────────
         lbl("MOTORES EXTRA")
-        motors = [(1,"Garra Principal","A",PRP),
-                  (2,"Agarrar Bloques","E","#FF9500"),
-                  (3,"Expandir Garra", "C","#00E5CC")]
+        motors = [(1,"Garra Principal","B",PRP),
+                  (2,"Subir Bloque","A",ORG),
+                  ]
         for mid, name, port, color in motors:
             mrow = tk.Frame(inn,bg=BG); mrow.pack(fill="x",padx=8,pady=2)
             tk.Label(mrow,text=f"{name} ({port})",bg=BG,fg=TEXT,
@@ -622,17 +650,17 @@ class WROApp:
 
         rec_row = tk.Frame(inn, bg=BG); rec_row.pack(fill="x", padx=8, pady=2)
         bkr = dict(relief="flat", cursor="hand2", font=("Helvetica",9), pady=4, padx=6)
-        tk.Button(rec_row, text="● Grabar", bg="#3A1A1A", fg=RED, **bkr,
+        tk.Button(rec_row, text="● Grabar",   bg="#3A1A1A", fg=RED, **bkr,
                   command=self._start_recording).pack(side="left", padx=2)
-        tk.Button(rec_row, text="■ Parar",  bg=CARD,     fg=DIM, **bkr,
+        tk.Button(rec_row, text="■ Parar",    bg=CARD,      fg=DIM, **bkr,
                   command=self._stop_recording).pack(side="left", padx=2)
-        tk.Button(rec_row, text="▶ Replay", bg="#1A3A1A", fg=GRN, **bkr,
+        tk.Button(rec_row, text="▶ Replay",   bg="#1A3A1A", fg=GRN, **bkr,
                   command=self._start_replay).pack(side="left", padx=2)
+        tk.Button(rec_row, text="Reiniciar",  bg="#2A1A2A", fg=AMB, **bkr,
+                  command=self._clear_log).pack(side="left", padx=2)
 
         rec_row2 = tk.Frame(inn, bg=BG); rec_row2.pack(fill="x", padx=8, pady=2)
-        tk.Button(rec_row2, text="🗑 Limpiar", bg=CARD, fg=DIM, **bkr,
-                  command=self._clear_log).pack(side="left", padx=2)
-        self._rec_lbl = tk.Label(rec_row2, text="Sin grabación", bg=BG, fg=DIM,
+        self._rec_lbl = tk.Label(rec_row2, text="Sin grabacion", bg=BG, fg=DIM,
                                  font=("Courier", 8))
         self._rec_lbl.pack(side="left", padx=8)
 
@@ -1098,8 +1126,9 @@ class WROApp:
         sign = "↺" if degrees < 0 else "↻"
         self.turn_lbl.config(text=f"Girando {sign} {abs(degrees)}°...", fg=CYAN)
 
-        # Buffer generoso: ~200°/s típico del DriveBase con aceleración
-        wait_s = abs(degrees) / 200.0 * 2.0
+        # Mínimo 1.0 s para que el publicador BLE tenga tiempo de arrancar y el
+        # hub reciba el paquete al menos una vez (el hub sondea cada 50 ms).
+        wait_s = max(1.0, abs(degrees) / 200.0 * 3.0)
 
         def run():
             t_start_ms = int((time.monotonic() - self._record_t0) * 1000) if self._recording else 0
@@ -1125,6 +1154,32 @@ class WROApp:
         threading.Thread(target=run, daemon=True).start()
 
     # ─────────────────────────────────────────────────────────────
+    #  ALINEAR A EJE
+    # ─────────────────────────────────────────────────────────────
+    def _align_to_axis(self, target_deg: int):
+        if not self._hub_online:
+            self.turn_lbl.config(text="Sin señal del hub", fg=RED)
+            return
+        heading = self._hub.heading % 360
+        delta   = target_deg - heading
+        if delta >  180: delta -= 360
+        if delta < -180: delta += 360
+        if abs(delta) >= 1:
+            self._do_turn(int(round(delta)))
+
+    def _align_nearest_axis(self):
+        if not self._hub_online:
+            self.turn_lbl.config(text="Sin señal del hub", fg=RED)
+            return
+        heading = self._hub.heading % 360
+        target  = round(heading / 90.0) * 90 % 360
+        delta   = target - heading
+        if delta >  180: delta -= 360
+        if delta < -180: delta += 360
+        if abs(delta) >= 1:
+            self._do_turn(int(round(delta)))
+
+    # ─────────────────────────────────────────────────────────────
     #  GRABACIÓN / REPLAY
     # ─────────────────────────────────────────────────────────────
     def _start_recording(self):
@@ -1147,7 +1202,7 @@ class WROApp:
     def _clear_log(self):
         self._input_log.clear()
         self._recording = False
-        self._rec_lbl.config(text="Sin grabación", fg=DIM)
+        self._rec_lbl.config(text="Sin grabacion", fg=DIM)
 
     def _start_replay(self):
         if not self._input_log:
