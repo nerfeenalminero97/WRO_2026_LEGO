@@ -132,10 +132,7 @@ def calibrar(robot):
     c = robot.color_sensor2.reflection()
     y = robot.color_sensor1.reflection()
     print(f'Color sensor 2 reflection: {c}')
-    print(f'Color sensor 1 reflection: {y}') 
-    
-    hola
-    """
+    print(f'Color sensor 1 reflection: {y}') """
 
 def stop(robot):
     robot.motor_mb.stop()
@@ -171,97 +168,46 @@ def motor_pair_dc(velocidad, velocidad2, robot):
     robot.motor_mf.dc(velocidad)  # Motor F sin esperar
     robot.motor_mb.dc(velocidad2)  # Motor B sin esperar
 
-def color(robot):
-    # Get the HSV data
-    h, s, v = robot.color_sensor.hsv()
-        
-    # --- 1. THE NEUTRAL CHECK (Priority) ---
-    # If Saturation is low (s < 25), it's Black, Gray, or White.
-    # We ignore Hue (h) entirely for these.
-    
-    if s < 25: 
-        if v < 20:          # Lowered threshold to catch stubborn Blacks
-            return "Black", 0
-        elif v > 70:        # High brightness
-            return "White", 300
-        else:               # Anything in between with low saturation
-            return "Black", 150
-
-    # --- 2. THE SPECTRUM CHECK ---
-    # We only get here if Saturation (s) is high (meaning it's a "real" color)
-
-    # Red
-    if h < 20 or h > 340:
-        return "Red", 25
-        
-    # Yellow
-    elif 40 <= h <= 85:
-        return "Yellow", 80
-            
-    # Green (Widened to catch more variants)
-    elif 90 <= h <= 180:
-        return "Green", 130
-            
-    # Blue (Only if it's actually saturated/vibrant blue)
-    elif 190 <= h <= 270:
-        return "Blue", 230
-        
-    return "Unknown", 
-
-def error_angular(objetivo, actual):
-    error = objetivo - actual
-
-    if error > 180:
-        error -= 360
-    elif error < -180:
-        error += 360
-
-    return error
-
-def giroscopio(angulo, velocidad, velocidad2, comparador, robot):
-
-    if comparador == 1:
+def giroscopio(angulo, velocidad, velocidad2, comparador, robot):  
+    if comparador == 1:  
         while True:
             motor_pair_run(velocidad, velocidad2, robot)
 
             if robot.hub.imu.heading() >= angulo:
                 break
 
-            wait(10)
-
         stop(robot)
 
-    elif comparador == 2:
+    if comparador == 2:  
         while True:
             motor_pair_run(velocidad, velocidad2, robot)
 
             if robot.hub.imu.heading() <= angulo:
                 break
 
-            wait(10)
-
         stop(robot)
 
-    elif comparador == 3:
+    if comparador == 3:  
         while True:
             motor_pair_run(velocidad, velocidad2, robot)
 
-            if abs(error_angular(angulo, robot.hub.imu.heading())) <= 3:
+            if abs(robot.hub.imu.heading()) == angulo:
                 break
 
-            wait(10)
+    if comparador == 4:
 
-        stop(robot)
+        rango_max = angulo + 5
+        rango_min = angulo - 5
 
-    elif comparador == 4:
         while True:
+
+            motor_pair_run(velocidad, velocidad2, robot)
+
             actual = robot.hub.imu.heading()
-            error = error_angular(angulo, actual)
 
-            if abs(error) <= 5:
+            if rango_min <= actual and actual <= rango_max:
                 break
 
-            motor_pair_run(velocidad, velocidad2, robot)
             wait(10)
 
         stop(robot)
@@ -337,16 +283,20 @@ def SA_posicion_relativa_angulo_actual(posicion_relativa, velocidad, masomenos, 
 
 def alineador(angulo, robot):
     if robot.hub.imu.heading() > angulo: 
-        giroscopio(angulo, -20, 20, 4, robot)
+        giroscopio(angulo, -20, 20, 3)
     else:
-        giroscopio(angulo, 20, -20, 4, robot)
-
+        giroscopio(angulo, 20, -20, 3)
+    
 def SA_color_negro(repeticiones, angulo, velocidad, sensores, robot):
     while robot.var != repeticiones: 
         if sensores == 1:
             SA(angulo, robot.color_sensor.color() == Color.BLACK or (robot.color_sensor.reflection() < 30 and robot.color_sensor.reflection() > 5), velocidad, robot)
     stop(robot)
     robot.var = 0
+
+def configurar():
+    pila(robot)
+    wait(10000)
 
 def SA_posicion_relativa_cm(distancia, angulo, velocidad, masomenos, robot):
     robot.motor_mf.reset_angle(0)
@@ -383,22 +333,34 @@ def SA_posicion_relativa_cm_angulo_actual(distancia, velocidad, masomenos, robot
     stop(robot)
     wait(100)
 
-################################################################################################################################################################
+##############################################################################################################
+##############################################################################################################
 
-def configurar():
-    pila(robot)
-    wait(10000)
+def recoger_lapiz(robot):
+    robot.motor_ga.run_angle(200, 210)
+    wait(6000)
+    robot.motor_ga.run_angle(200, -210)
 
 def limpiar_llantas(robot):
     while True:
         motor_pair_run(1000, 1000, robot)
 
 def test(robot):
-    SA_posicion_relativa_cm(27, 0, -300, 2, robot)
+    while False:
+        motor_pair_distancia(220, 200, 75, robot)
+        wait(500)
+        robot.hub.imu.reset_heading(0)
+        SA_posicion_relativa(0, -100, -200, 2, robot)
+        giroscopio(-175, 100, -100, 2, robot)
+        wait(1000)
+        robot.motor_mf.run_angle(100, 100)
+        SA_posicion_relativa(160, 100, 200, 1, robot)
+    SA_posicion_relativa_angulo_actual(1080, 200, 1, robot)
 
 #################################################################################################################################################################################################################################
+##################################################################################################################################################################################################################################
 
-def recoger_bloques(robot):
+def computadora_capa_interna(robot):
     SA_posicion_relativa(0, -100, -90, 2, robot)
     SA_posicion_relativa(0, 10, 90, 1, robot)
     robot.motor_le.run_angle(200, -60)
@@ -409,203 +371,58 @@ def recoger_bloques(robot):
     robot.motor_le.run_angle(200, 55)
     robot.motor_ga.run_angle(200, 150)
 
-def construccion_pala1_bloque0cemento(robot):
+def computadora_base_relieve(robot):
     robot.hub.imu.reset_heading(0)
     robot.motor_color.run_angle(1000, 340)
     SA_posicion_relativa_angulo_actual(100, 200, 1, robot)
     motor_pair_distancia(300, 300, 20, robot)
     wait(500)
     robot.hub.imu.reset_heading(0)
-    SA_posicion_relativa(2, -1200, -320, 2, robot)
+    SA_posicion_relativa(3, -1200, -320, 2, robot)
     giroscopio(-35, 150, -150, 2, robot)
     motor_pair_distancia(300, 300, 100, robot)
     giroscopio(0, -150, 0, 1, robot)
     SA_posicion_relativa(0, 350, 300, 1, robot)
     motor_pair_distancia(-300,-300, 50, robot)
-    giroscopio(-175, 255, -150, 2, robot)
+    giroscopio(-175, 150, -100, 2, robot)
     SA_posicion_relativa(0, 500, 300, 1, robot)
-    robot.motor_mf.run_angle(300, 235)
-    robot.motor_mb.run_angle(300, 210)
+    robot.motor_mf.run_angle(300, 225)
+    robot.motor_mb.run_angle(300, 200)
     SA_posicion_relativa_cm(20, 0, 300, 1, robot)
     motor_pair_distancia(150, -150, 185, robot)
     motor_pair_distancia(-300, 300, 185, robot)
+
     #checar doble vuelta
 
-def escombros_blancos(robot):
+def mouse_teclas(robot):
     SA_posicion_relativa_cm(50, 0, 300, 1, robot)
     robot.motor_ga.run_angle(1000, -235)
     SA_posicion_relativa(0, 20, 150, 1, robot)
     robot.motor_ga.run_angle(1000, -80)
     wait(100)
     SA_posicion_relativa(0, -60, -300, 2, robot)
-    giroscopio(42, 150, -150, 4, robot)
-    SA_posicion_relativa(42, 900, 400, 1, robot)
+    giroscopio(39, 150, -150, 4, robot)
+    SA_posicion_relativa(39, 900, 400, 1, robot)
     robot.motor_color.run_angle(1000, -500)
-    SA_posicion_relativa(43, 300, 150, 1, robot)
+    SA_posicion_relativa(39, 100, 150, 1, robot)
     giroscopio(0, 120, 15, 4, robot)
-    alineador(0, robot)
-    SA_posicion_relativa_angulo_actual(170, 200, 1, robot)
+    SA_posicion_relativa_angulo_actual(150, 200, 1, robot)
     #Corregir SA
     #asegurar que la garra este bien recta para la rotacion
-    #checar el giro paa que deje los escombros en lugar<
+    #checar el giro paa que deje los escombros en lugar
 
-def leer_color(robot):
-    #robot.motor_color.run_angle(1000, -220)
-    robot.color = color(robot)
-    robot.lista_colores.append(robot.color)
-    robot.color = 0 
-    for i in range(3):
-        robot.color = color(robot)
-        robot.lista_colores.append(robot.color)
-        SA_posicion_relativa(0, -45, -200, 2, robot)
-        robot.color = 0 
-    robot.motor_color.run_angle(1000, -490)
-    robot.color = color(robot)
-    robot.lista_colores.append(robot.color)
-    robot.color = 0 
-    for i in range(3):
-        robot.color = color(robot)
-        robot.lista_colores.append(robot.color)
-        SA_posicion_relativa(0, 45, 200, 1, robot)
-        robot.color = 0 
-    robot.motor_color.run_angle(1000, -490)
-    giroscopio(175, -100, 100, 2, robot)
-    robot.color = color(robot)
-    robot.lista_colores.append(robot.color)
-    robot.color = 0 
-    for i in range(3):
-        robot.color = color(robot)
-        robot.lista_colores.append(robot.color)
-        SA_posicion_relativa(0, -45, -200, 2, robot)
-        robot.color = 0 
-    robot.motor_color.run_angle(1000, 1260)
-    robot.motor_ga.run_angle(1000, 235)
-    SA_posicion_relativa(0, -100, -200, 2, robot)
-    giroscopio(45, -120, 120, 4, robot)
-
-def puntos_grupo(grupo, color):
-    correctos = 0
-
-    for c in grupo:
-        if c == color:
-            correctos += 1
-
-    incorrectos = robot.BLOQUES_POR_GRUPO - correctos
-    return correctos * 10 + incorrectos * 5
-
-def prioridad_asignacion(asignacion):
-    total = 0
-
-    for color in asignacion:
-        total += robot.PRIORIDAD_COLORES.index(color)
-
-    return total
-
-def asignacion_valida(asignacion):
-    uso = {}
-
-    for color in asignacion:
-        if color in uso:
-            uso[color] += robot.BLOQUES_POR_GRUPO
-        else:
-            uso[color] = robot.BLOQUES_POR_GRUPO
-
-    for color in uso:
-        if uso[color] > robot.MAX_BLOQUES_POR_COLOR:
-            return False
-
-    return True
-
-def elegir_mejor_asignacion(grupos):
-    mejor_asignacion = None
-    mejor_puntaje = -1
-    mejor_prioridad = 999
-
-    for color1 in robot.PRIORIDAD_COLORES:
-        for color2 in robot.PRIORIDAD_COLORES:
-            for color3 in robot.PRIORIDAD_COLORES:
-
-                asignacion = [color1, color2, color3]
-
-                if not asignacion_valida(asignacion):
-                    continue
-
-                puntaje = (
-                    puntos_grupo(grupos[0], color1) +
-                    puntos_grupo(grupos[1], color2) +
-                    puntos_grupo(grupos[2], color3)
-                )
-
-                prioridad = prioridad_asignacion(asignacion)
-
-                if puntaje > mejor_puntaje:
-                    mejor_puntaje = puntaje
-                    mejor_asignacion = asignacion
-                    mejor_prioridad = prioridad
-
-                elif puntaje == mejor_puntaje and prioridad < mejor_prioridad:
-                    mejor_asignacion = asignacion
-                    mejor_prioridad = prioridad
-
-    return mejor_asignacion, mejor_puntaje
-
-def leer_lista(robot):
-    lista = robot.lista_colores
-
-    if len(lista) < 12:
-        print("ERROR: lista incompleta")
-        print(lista)
-        return None
-
-    grupo1 = [lista[0], lista[1], lista[6], lista[7]]
-    grupo2 = [lista[2], lista[3], lista[4], lista[5]]
-    grupo3 = [lista[8], lista[9], lista[10], lista[11]]
-
-    grupos = [grupo1, grupo2, grupo3]
-
-    asignacion, puntaje = elegir_mejor_asignacion(grupos)
-
-    print("Grupo 1:", grupo1, "→", asignacion[0])
-    print("Grupo 2:", grupo2, "→", asignacion[1])
-    print("Grupo 3:", grupo3, "→", asignacion[2])
-    print("Puntaje estimado:", puntaje, "/ 120")
-
-    return asignacion[0], asignacion[1], asignacion[2]
-
-def construccion_pala2(robot):
+def computadora_primer_plano_pantalla(robot):
     giroscopio(0, 10, 150, 1, robot)
     SA_posicion_relativa_cm(147, 0, 300, 1, robot)
     SA_posicion_relativa(0, -250, -400, 2, robot)
     giroscopio(90, -150, 150, 1, robot)
     SA_posicion_relativa(90, -50, -300, 2, robot)
 
-def distancia_por_color(color):
-    if color == Color.YELLOW:
-        return 435
-    elif color == Color.BLUE:
-        return 615
-    elif color == Color.GREEN:
-        return 810
-    elif color == Color.WHITE:
-        return 1160
-    else:
-        print("Color no reconocido:", color)
-        return None
-
-def ir_por_bloques(color_detectado, robot):
-    distancia_calculada = distancia_por_color(color_detectado)
-
-    if distancia_calculada is None:
-        return
-
-    SA_posicion_relativa(90, distancia_calculada, 300, 1, robot)
-    giroscopio(0, -150, 150, 2, robot)
-
-def dejar_bloques(robot):
+def letras(robot):
     robot.motor_ga.run_angle(300, -100)
     robot.motor_le.run_angle(300, -60)
 
-def dejar_grupo1(robot):
+def pantalla_real(robot):
     SA_posicion_relativa(0, 100, 250, 1, robot)
     giroscopio(-90, -150, 150, 2, robot)
     SA_posicion_relativa(-90, 50, 300, 1, robot)
@@ -614,11 +431,9 @@ def dejar_grupo1(robot):
     giroscopio(0, 150, 50, 2, robot)
     SA_posicion_relativa(0, 400, 300, 1, robot)
 
-def escombros_azules(robot):
-    SA_posicion_relativa_cm(23, 45, -300, 2, robot)
-    giroscopio(21, -150, 150, 4, robot)
-    SA_posicion_relativa_cm(51, 21, -300, 2, robot)
-    giroscopio(175, -150, 150, 4, robot)
+def computadora_releive_pantalla(robot):
+    SA_posicion_relativa_cm(-92, 37, -200, 2, robot)
+    giroscopio(175, -150, 150, 1, robot)
     SA_posicion_relativa(0, 75, 150, 1, robot)
     robot.motor_ga.run_angle(300, -235)
     SA_posicion_relativa(0, 50, 250, 1, robot)
@@ -626,19 +441,13 @@ def escombros_azules(robot):
     wait(100)
     SA_posicion_relativa(0, -150, -300, 2, robot)
 
-#configurar()
-#limpiar_llantas(robot)
-#test(robot)
-
 def main(robot):
-    construccion_pala1_bloque0cemento(robot)
-    escombros_blancos(robot)
-    leer_color(robot)
-    color1, color2, color3 = leer_lista(robot)
-    escombros_azules(robot)
-    construccion_pala2(robot)
-    ir_por_bloques(color1, robot)
-    recoger_bloques(robot)
-    dejar_grupo1(robot)
+    computadora_capa_interna(robot)
+    computadora_base_relieve(robot)
+    mouse_teclas(robot)
+    computadora_primer_plano_pantalla(robot)
+    computadora_releive_pantalla(robot)
+    pantalla_real(robot)
+    letras(robot)
 
 main(robot)
