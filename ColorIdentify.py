@@ -5,7 +5,7 @@ from pybricks.tools import wait
 
 # Initialize hardware
 hub = PrimeHub()
-sensor = ColorSensor(Port.B)
+sensor = ColorSensor(Port.C)
 
 def get_custom_color_value():
     # Get the HSV data
@@ -14,14 +14,11 @@ def get_custom_color_value():
     # --- 1. THE NEUTRAL CHECK (Priority) ---
     # If Saturation is low (s < 25), it's Black, Gray, or White.
     # We ignore Hue (h) entirely for these.
-    
-    if s < 25: 
-        if v < 20:          # Lowered threshold to catch stubborn Blacks
-            return "Black", 0
-        elif v > 70:        # High brightness
-            return "White", 300
-        else:               # Anything in between with low saturation
-            return "Black", 150
+
+    if v < 20:          # Lowered threshold to catch stubborn Blacks
+        return "Black", 0
+    elif v > 90 and s < 5 and 0 <= h >= 180:        # High brightness
+        return "White", 300
 
     # --- 2. THE SPECTRUM CHECK ---
     # We only get here if Saturation (s) is high (meaning it's a "real" color)
@@ -31,7 +28,7 @@ def get_custom_color_value():
         return "Red", 25
     
     # Yellow
-    elif 40 <= h <= 85:
+    elif h <= 68 and 5 <= s >= 10:
         return "Yellow", 80
         
     # Green (Widened to catch more variants)

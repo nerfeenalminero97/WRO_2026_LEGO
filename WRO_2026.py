@@ -8,21 +8,26 @@ class Robot:
     def __init__(self):
         self.hub = PrimeHub()
 
-        self.motor_mf = Motor(Port.F)
-        self.motor_mb = Motor(Port.B, positive_direction=Direction.COUNTERCLOCKWISE)
-        self.motor_gd = Motor(Port.C)
-        self.motor_lc = Motor(Port.D, positive_direction=Direction.COUNTERCLOCKWISE)
+        self.motor_derecho = Motor(Port.F)
+        self.motor_izquierdo = Motor(Port.D, positive_direction=Direction.COUNTERCLOCKWISE)
+        self.motor_central = Motor(Port.B)
+        self.motor_bloques = Motor(Port.A, positive_direction=Direction.COUNTERCLOCKWISE)
 
-        self.color_sensor1 = ColorSensor(Port.E)
-        self.color_sensor2 = ColorSensor(Port.A)
+        self.color_sensor_central = ColorSensor(Port.E)
+        self.color_sensor_izquierda = ColorSensor(Port.C)
 
-        self.lista_colores = []
+        self.lista_colores_central = []
+        self.lista_colores_izquierdo = []
+        self.color = 0
         self.dicc_colores = {}
         self.var = 0
+        self.PRIORIDAD_COLORES = [Color.YELLOW, Color.BLUE, Color.GREEN, Color.WHITE]
+        self.MAX_BLOQUES_POR_COLOR = 6
+        self.BLOQUES_POR_GRUPO = 4
 
         self.move_tank = DriveBase(
-            self.motor_mf,
-            self.motor_mb,
+            self.motor_derecho,
+            self.motor_izquierdo,
             wheel_diameter=86,
             axle_track=120
         )
@@ -131,8 +136,8 @@ def calibrar(robot):
     print(f'Color sensor 1 reflection: {y}') """
 
 def stop(robot):
-    robot.motor_mb.stop()
-    robot.motor_mf.stop()
+    robot.motor_derecho.stop()
+    robot.motor_izquierdo.stop()
 
 def motor_pair_reset(robot):
     robot.motor_mf.reset_angle(0)
@@ -245,13 +250,13 @@ def SA(angulo, condicion, velocidad, robot):
     robot.move_tank.drive(velocidad, giro)
 
 def SA_posicion_relativa(angulo, posicion_relativa, velocidad, masomenos, robot):
-    robot.motor_mf.reset_angle(0)
+    robot.motor_derecho.reset_angle(0)
 
     while robot.var != 1:
         if masomenos == 1:
-            condicion = robot.motor_mf.angle() >= posicion_relativa
+            condicion = robot.motor_derecho.angle() >= posicion_relativa
         elif masomenos == 2:
-            condicion = robot.motor_mf.angle() <= posicion_relativa
+            condicion = robot.motor_derecho.angle() <= posicion_relativa
 
         SA(angulo, condicion, velocidad, robot)
         wait(10)
@@ -382,7 +387,7 @@ def leer_color(robot):
 #limpiar_llantas(robot)
 #test(robot)
 def main():
-    construccion_pala1_bloque0cemento(robot)
-    escombros_blancos(robot)  
+    robot.hub.imu.reset_heading(0)
+    SA_posicion_relativa(0, 1000, 200, 1, robot)
 
 main()
