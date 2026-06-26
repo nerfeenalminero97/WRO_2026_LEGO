@@ -492,12 +492,12 @@ def recoger_bloques(robot):
         robot.hub.imu.reset_heading(0)
         SA_posicion_relativa_angulo_actual(-10, -250, 2, robot)
         giroscopio(-90, 110, -165, 4, robot)
-    SA_posicion_relativa_angulo_actual(100, 250, 1, robot)
+    SA_posicion_relativa_angulo_actual(120, 250, 1, robot)
     robot.hub.imu.reset_heading(0)
     wait(100)
     robot.hub.imu.reset_heading(0)
     if robot.color == 1:
-        SA_posicion_relativa(10, -245, -200, 2, robot)
+        SA_posicion_relativa(40, -235, -200, 2, robot)
     if robot.color == 2:
         SA_posicion_relativa(17, -325, -200, 2, robot)
     if robot.color == 3:
@@ -505,7 +505,7 @@ def recoger_bloques(robot):
     if robot.color == 4:
         SA_posicion_relativa(17, -445, -200, 2, robot)
     robot.motor_bloques.run_target(1000,0)
-    alineador(-3, robot)
+    alineador(-1, robot)
     robot.motor_central.run_target(200, -4)
     robot.motor_bloques.run_until_stalled(-400, duty_limit=50)
     robot.motor_bloques.run(-40)
@@ -515,18 +515,19 @@ def recoger_bloques(robot):
 
 def dejar_bloques_1(robot):
     giroscopio(90, -150, 150, 4, robot)
-    SA_posicion_relativa_cm(33, 90, -200, 2, robot)
+    SA_posicion_relativa_cm(35, 120, -200, 2, robot)
     giroscopio(0, 150, -150, 4, robot)
-    SA_color_negro(1, -7, -200, 1, robot)
-    giroscopio(90, -160, 150, 4, robot)
-    SA_posicion_relativa(89, -790, -175, 2, robot)
+    SA_color_negro(1, 40, -200, 1, robot)
+    giroscopio(90, -160, 130, 4, robot)
+    SA_posicion_relativa(89, -780, -175, 2, robot)
     dropoff_bloques(robot)
     if robot.color != 4:
-        SA_posicion_relativa_angulo_actual(615, 400, 1, robot)
+        SA_posicion_relativa_angulo_actual(500, 400, 1, robot)
         giroscopio(0, 150, -150, 4, robot)
-        SA_posicion_relativa(0, 600, 400, 1, robot)
+        SA_posicion_relativa(0, 550, 400, 1, robot)
         giroscopio(90, -150, 150, 4, robot)
         SA_posicion_relativa(90, 550, 400, 1, robot)
+        SA_posicion_relativa_angulo_actual(-10, -250, 2, robot)
         giroscopio(0, 110, -165, 4, robot)
     else:
         SA_posicion_relativa_angulo_actual(200, 400, 1, robot)
@@ -537,105 +538,13 @@ def dropoff_bloques(robot):
     robot.motor_central.run_target(300, 3)
     robot.motor_bloques.run_angle(120, 90)
     robot.motor_central.run_angle(150, 90)
-    motor_pair_distancia(100, 100, 100, robot)
+    motor_pair_distancia(100, 100, 200, robot)
     '''robot.motor_central.run_target(400, 3)
     robot.motor_bloques.run_target(800, 45)
     motor_pair_distancia(-150, -150, 35, robot)
     motor_pair_distancia(100, 100, 40, robot)'''
     robot.motor_bloques.run_until_stalled(-200)
     robot.motor_central.run_until_stalled(300)
-
-
-
-def construccion_pala1_bloque0cemento(robot):
-    SA_posicion_relativa_angulo_actual(-110, -200, 2, robot)
-    robot.hub.imu.reset_heading(0)
-    wait(100)
-    robot.hub.imu.reset_heading(0)
-    SA_posicion_relativa_cm(58, -14, 350, 1, robot)
-    robot.motor_central.run_angle(1000, -125)
-    SA_posicion_relativa_cm(30, 1, -300, 2, robot)
-    robot.motor_central.run_angle(1000, 125)
-    robot.motor_derecho.run_angle(600, 270)
-    robot.motor_izquierdo.run_angle(600, 325)
-    SA_posicion_relativa_cm_angulo_actual(38, 400, 1, robot)
-    robot.motor_central.run_angle(1000, -120)
-    giroscopio(-4, 130, -170, 2, robot)
-    SA_posicion_relativa_cm(60, -2, 350, 1, robot)
-    giroscopio(90, -150, 150, 4, robot)    
-    SA_posicion_relativa(90, -400, -300, 2, robot)
-    robot.motor_central.run_angle(1000, 120)
-    SA_color_negro(1, 90, -300, 1, robot)
-    giroscopio(180, -110, 190, 4, robot)
-    SA_color_negro(2, 0, 300, 2, robot)
-    SA_posicion_relativa_angulo_actual(150, 300, 1, robot)
-
-def construccion_pala2(robot):
-    giroscopio(0, 10, 150, 1, robot)
-    SA_posicion_relativa_cm(147, 0, 300, 1, robot)
-    SA_posicion_relativa(0, -250, -400, 2, robot)
-    giroscopio(90, -150, 150, 1, robot)
-    SA_posicion_relativa(90, -50, -300, 2, robot)
-
-def escombros_verdes(robot):
-    SA_posicion_relativa_angulo_actual(90, 100, 1, robot)
-    SA_color_negro(3, 0, 250, 2, robot)
-    SA_posicion_relativa_cm(62, 4, 400, 1, robot)
-    robot.motor_central.run_angle(1000, -120)
-    SA_posicion_relativa(0, -200, -300, 2, robot)
-    giroscopio(180, -150, 150, 4, robot)
-    SA_posicion_relativa_cm(22, 0, 400, 1, robot)
-    robot.motor_central.run_angle(1000, 130)
-    giroscopio(180, -150, 150, 4, robot)
-
-
-
-def distancia_por_color(color):
-    if color == Color.YELLOW:
-        return 435
-    elif color == Color.BLUE:
-        return 615
-    elif color == Color.GREEN:
-        return 810
-    elif color == Color.WHITE:
-        return 1160
-    else:
-        print("Color no reconocido:", color)
-        return None
-
-def ir_por_bloques(color_detectado, robot):
-    distancia_calculada = distancia_por_color(color_detectado)
-
-    if distancia_calculada is None:
-        return
-
-    SA_posicion_relativa(90, distancia_calculada, 300, 1, robot)
-    giroscopio(0, -150, 150, 2, robot)
-
-def dejar_grupo1(robot):
-    SA_posicion_relativa(0, 100, 250, 1, robot)
-    giroscopio(-90, -150, 150, 2, robot)
-    SA_posicion_relativa(-90, 50, 300, 1, robot)
-    giroscopio(-175, -150, 150, 2, robot)
-    SA_posicion_relativa(0, -700, -300, 2, robot)
-    giroscopio(0, 150, 50, 2, robot)
-    SA_posicion_relativa(0, 400, 300, 1, robot)
-
-def escombros_azules(robot):
-    SA_posicion_relativa_cm(23, 45, -300, 2, robot)
-    giroscopio(21, -150, 150, 4, robot)
-    SA_posicion_relativa_cm(51, 21, -300, 2, robot)
-    giroscopio(175, -150, 150, 4, robot)
-    SA_posicion_relativa(0, 75, 150, 1, robot)
-    robot.motor_ga.run_angle(300, -235)
-    SA_posicion_relativa(0, 50, 250, 1, robot)
-    robot.motor_ga.run_angle(300, -75)
-    wait(100)
-    SA_posicion_relativa(0, -150, -300, 2, robot)
-
-#configurar()
-#limpiar_llantas(robot)
-#test(robot)
 
 def main(robot):  
     robot.hub.imu.reset_heading(0)
@@ -649,6 +558,9 @@ def main(robot):
     recoger_bloques(robot)
     robot.color += 1
     dejar_bloques_1
+    recoger_bloques(robot)
+    robot.color +=1
+    dejar_bloques_1(robot)
 
 robot.hub.imu.reset_heading(0)
 wait(500)
